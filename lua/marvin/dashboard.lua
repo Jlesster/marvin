@@ -196,22 +196,29 @@ function M.show()
 
   -- Highlighting
   local ns = vim.api.nvim_create_namespace('marvin_dashboard')
+
+  -- Clear any existing highlights first
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
   for i, line in ipairs(lines) do
-    if line:match('⚡ MARVIN') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
-    elseif line:match('Project:') or line:match('📁') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'String', i - 1, 0, -1)
-    elseif line:match('🚀') or line:match('📚') or line:match('🔧') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
+    -- Title line - bright red/pink
+    if line:match('MARVIN') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'DiagnosticError', i - 1, 0, -1)
+      -- Project info line - cyan/teal
+    elseif line:match('Project:') then
+      vim.api.nvim_buf_add_highlight(buf, ns, '@lsp.type.namespace', i - 1, 0, -1)
+      -- Section headers - bright yellow
+    elseif line:match('Actions') or line:match('Dependencies') or line:match('Tools') then
+      vim.api.nvim_buf_add_highlight(buf, ns, '@lsp.type.class', i - 1, 0, -1)
+      -- Separator lines - very dim gray
     elseif line:match('═') or line:match('─') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
-      -- FIX: Escape the square brackets with % to treat them as literal characters
-    elseif line:match('%[%]') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Special', i - 1, 0, -1)
-    elseif line:match('^%s+[A-Z]') and not line:match('MARVIN') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-    elseif line:match('↑/↓') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
+      vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
+      -- Description lines - pink italic
+    elseif line:match('^%s%s%s%s%s%s%S') then
+      vim.api.nvim_buf_add_highlight(buf, ns, '@comment', i - 1, 0, -1)
+      -- Footer controls - dim comment
+    elseif line:match('Navigate') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
     end
   end
 
