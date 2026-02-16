@@ -6,14 +6,12 @@ function M.register()
   end, {
     desc = 'Open Maven Menu',
   })
-  
+
   vim.api.nvim_create_user_command('MavenDashboard', function()
     require('marvin.dashboard').show()
   end, {
     desc = 'Open Marvin Dashboard',
   })
-
-  vim.api.nvim_create_user_command('MavenExec', function(opts)
 
   vim.api.nvim_create_user_command('MavenExec', function(opts)
     M.execute_goal(opts.args)
