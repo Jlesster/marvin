@@ -59,7 +59,7 @@ local function scan_packages()
 end
 
 -- FIXED: Create package selector that stays in normal mode
-function M.select_package(callback)
+function M.select_package(callback, on_back)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
 
@@ -103,6 +103,7 @@ function M.select_package(callback)
   ui.select(package_items, {
     prompt = '📦 Select Package',
     enable_search = true, -- Enable search for package selector
+    on_back = on_back,
     format_item = function(item)
       return item.label
     end,
@@ -139,7 +140,7 @@ function M.select_package(callback)
 end
 
 -- Create a new Java file with package selector
-function M.create_file_interactive(type_name, options)
+function M.create_file_interactive(type_name, options, menu_on_back)
   options = options or {}
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
@@ -203,6 +204,9 @@ function M.create_file_interactive(type_name, options)
         vim.cmd('edit ' .. file_path)
 
         ui.notify('✅ Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
+      end, function()
+        -- Back callback - show the type menu again
+        M.show_menu(menu_on_back)
       end)
     end)
   end)
@@ -292,7 +296,7 @@ function M.prompt_fields(callback, prompt_text)
 end
 
 -- Show creation menu
-function M.show_menu()
+function M.show_menu(on_back)
   local ui = require('marvin.ui')
 
   local types = {
@@ -314,38 +318,39 @@ function M.show_menu()
 
   ui.select(types, {
     prompt = '☕ Create Java File',
+    on_back = on_back,
   }, function(choice)
     if not choice then return end
 
     local options = {}
 
     if choice.id == 'class' then
-      M.create_file_interactive('Class', options)
+      M.create_file_interactive('Class', options, on_back)
     elseif choice.id == 'class_main' then
       options.main = true
-      M.create_file_interactive('Class', options)
+      M.create_file_interactive('Class', options, on_back)
     elseif choice.id == 'interface' then
-      M.create_file_interactive('Interface', options)
+      M.create_file_interactive('Interface', options, on_back)
     elseif choice.id == 'enum' then
       M.prompt_enum_values(function(values)
         if values then
           options.values = values
-          M.create_file_interactive('Enum', options)
+          M.create_file_interactive('Enum', options, on_back)
         end
       end)
     elseif choice.id == 'record' then
       M.prompt_fields(function(fields)
         if fields then
           options.fields = fields
-          M.create_file_interactive('Record', options)
+          M.create_file_interactive('Record', options, on_back)
         end
       end, '📦 Record Fields (Type name, ...)')
     elseif choice.id == 'abstract' then
-      M.create_file_interactive('Abstract Class', options)
+      M.create_file_interactive('Abstract Class', options, on_back)
     elseif choice.id == 'exception' then
-      M.create_file_interactive('Exception', options)
+      M.create_file_interactive('Exception', options, on_back)
     elseif choice.id == 'test' then
-      M.create_file_interactive('Test', options)
+      M.create_file_interactive('Test', options, on_back)
     elseif choice.id == 'builder' then
       M.prompt_fields(function(fields)
         if fields then
@@ -353,7 +358,7 @@ function M.show_menu()
             fields[1].required = true
           end
           options.fields = fields
-          M.create_file_interactive('Builder', options)
+          M.create_file_interactive('Builder', options, on_back)
         end
       end, '🗂️ Builder Fields (Type name, ...)')
     end

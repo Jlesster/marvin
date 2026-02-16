@@ -99,6 +99,7 @@ function M.popup_select(items, opts, callback)
   opts = opts or {}
   local prompt = opts.prompt or 'Select'
   local enable_search = opts.enable_search or false
+  local on_back = opts.on_back or nil -- Callback for back navigation
   local format_fn = opts.format_item or function(item)
     if type(item) == 'table' then
       return item.label or item.name or tostring(item)
@@ -147,9 +148,53 @@ function M.popup_select(items, opts, callback)
   -- Initialize to first selectable item
   current_idx = find_next_selectable(1, 'down')
 
-  -- Create window
-  local max_height = math.min(#filtered_items + 10, 40)
-  local buf, win = create_popup('🔍 ' .. prompt, 80, max_height)
+  -- Calculate dynamic window height based on content
+  local function calculate_window_height()
+    local base_lines = 0
+
+    -- Search bar (if enabled)
+    if enable_search then
+      base_lines = base_lines + 3 -- empty line, search bar, separator
+    else
+      base_lines = base_lines + 1 -- just empty line
+    end
+
+    -- Items
+    base_lines = base_lines + #filtered_items
+
+    -- Footer
+    base_lines = base_lines + 5 -- empty, separator, count, nav help, empty
+
+    -- Add some padding
+    local total_height = base_lines + 2
+
+    -- Constrain to reasonable bounds
+    local min_height = 10
+    local max_height = math.floor(vim.o.lines * 0.8)
+
+    return math.max(min_height, math.min(total_height, max_height))
+  end
+
+  -- Create window with dynamic height
+  local win_height = calculate_window_height()
+  local buf, win = create_popup('🔍 ' .. prompt, 80, win_height)
+
+  -- Calculate max label width for alignment
+  local function calculate_max_label_width()
+    local max_width = 0
+    for _, formatted in ipairs(filtered_items) do
+      if not formatted.is_separator and formatted.desc then
+        local indicator_len = 2                    -- "▶ " or "  "
+        local icon_len = formatted.icon and 2 or 0 -- icon + space
+        local label_len = vim.fn.strdisplaywidth(formatted.display)
+        local total = indicator_len + icon_len + label_len
+        if total > max_width then
+          max_width = total
+        end
+      end
+    end
+    return max_width + 4 -- Add padding for " • "
+  end
 
   -- Render function
   local function render()
@@ -173,6 +218,7 @@ function M.popup_select(items, opts, callback)
     -- Items (COMPACT - no blank lines)
     local selectable = {}
     local item_map = {}
+    local align_col = calculate_max_label_width()
 
     if #filtered_items == 0 then
       table.insert(lines, '')
@@ -183,39 +229,67 @@ function M.popup_select(items, opts, callback)
         local line_num = #lines + 1
 
         if formatted.is_separator then
-          -- Separator rendering
-          table.insert(lines, formatted.display)
-          table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+          -- Separator rendering - full width
+          table.insert(lines, string.rep('─', 78))
+          table.insert(highlights, { line = line_num - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+
+          -- Add separator text centered
+          if formatted.display and formatted.display ~= '' then
+            -- Extract text from separator (remove existing dashes and trim)
+            local sep_text = formatted.display:gsub('─', ''):gsub('^%s+', ''):gsub('%s+$', '')
+            sep_text = ' ' .. sep_text .. ' '
+            local text_width = vim.fn.strdisplaywidth(sep_text)
+            local start_pos = math.floor((78 - text_width) / 2)
+
+            -- Replace part of the line with text
+            lines[#lines] = string.rep('─', start_pos) .. sep_text .. string.rep('─', 78 - start_pos - text_width)
+            table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+          end
         else
           local is_selected = i == current_idx
 
           -- Selection indicator
           local indicator = is_selected and '▶ ' or '  '
           local icon_str = formatted.icon and (formatted.icon .. ' ') or ''
+          local label_part = indicator .. icon_str .. formatted.display
 
-          table.insert(lines, indicator .. icon_str .. formatted.display)
-          table.insert(selectable, line_num)
-          item_map[line_num] = formatted
+          -- Calculate padding needed for alignment
+          local current_width = vim.fn.strdisplaywidth(label_part)
+          local padding = align_col - current_width
 
-          -- Highlight selected item
-          if is_selected then
-            table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
-            table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
-          else
-            table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
-          end
-
-          -- Description on same line if short, otherwise next line
           if formatted.desc then
-            if #formatted.desc < 40 then
-              -- Short desc: append to same line
-              local desc_start = #lines[#lines]
-              lines[#lines] = lines[#lines] .. '  • ' .. formatted.desc
-              table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = desc_start, col_end = -1 })
+            -- Aligned description
+            local line_content = label_part .. string.rep(' ', padding) .. '• ' .. formatted.desc
+            table.insert(lines, line_content)
+
+            -- Store description start position for highlighting
+            local desc_start = align_col + 2 -- position after "• "
+
+            table.insert(selectable, line_num)
+            item_map[line_num] = formatted
+
+            -- Highlight selected item
+            if is_selected then
+              table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
+              table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
             else
-              -- Long desc: new line (but still no blank line after)
-              table.insert(lines, '    ' .. formatted.desc)
-              table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+              table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
+            end
+
+            -- Highlight description
+            table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = align_col, col_end = -1 })
+          else
+            -- No description - just the label
+            table.insert(lines, label_part)
+            table.insert(selectable, line_num)
+            item_map[line_num] = formatted
+
+            -- Highlight selected item
+            if is_selected then
+              table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
+              table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
+            else
+              table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
             end
           end
         end
@@ -233,7 +307,7 @@ function M.popup_select(items, opts, callback)
     table.insert(lines, count_text)
     table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
 
-    table.insert(lines, '  ↑↓ Navigate │ Enter Select │ Esc Cancel')
+    table.insert(lines, '  ↑↓ Navigate │ Enter Select │ Esc Cancel' .. (on_back and ' │ ⌫ Back' or ''))
     table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
     table.insert(lines, '')
 
@@ -301,6 +375,12 @@ function M.popup_select(items, opts, callback)
     -- Ensure we're on a selectable item
     current_idx = find_next_selectable(current_idx, 'down')
 
+    -- Recalculate window height based on filtered results
+    local new_height = calculate_window_height()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_set_height(win, new_height)
+    end
+
     lines, selectable, item_map, highlights = render()
     update_display()
   end
@@ -364,7 +444,16 @@ function M.popup_select(items, opts, callback)
 
   -- Only enable search if explicitly requested
   if enable_search then
-    vim.keymap.set('n', '<BS>', function() update_search('<BS>') end, map_opts)
+    -- Backspace: delete search char OR go back if search is empty
+    vim.keymap.set('n', '<BS>', function()
+      if search_term == '' and on_back then
+        vim.api.nvim_win_close(win, true)
+        on_back()
+      else
+        update_search('<BS>')
+      end
+    end, map_opts)
+
     vim.keymap.set('n', '<C-u>', function() update_search('<C-u>') end, map_opts)
 
     -- Type to search (alphanumeric and symbols)
@@ -374,6 +463,14 @@ function M.popup_select(items, opts, callback)
       if char ~= ' ' and char ~= 'j' and char ~= 'k' and char ~= 'q' then
         vim.keymap.set('n', char, function() update_search(char) end, map_opts)
       end
+    end
+  else
+    -- Backspace goes back if search is disabled and on_back is provided
+    if on_back then
+      vim.keymap.set('n', '<BS>', function()
+        vim.api.nvim_win_close(win, true)
+        on_back()
+      end, map_opts)
     end
   end
 
@@ -458,6 +555,7 @@ end
 
 -- Public API
 function M.select(items, opts, callback)
+  -- Pass through on_back if provided
   M.popup_select(items, opts, callback)
 end
 
@@ -493,7 +591,7 @@ function M.level_to_snacks(level)
 end
 
 -- Maven goal menu
-function M.show_goal_menu()
+function M.show_goal_menu(on_back)
   local project = require('marvin.project')
 
   if not project.validate_environment() then
@@ -504,13 +602,16 @@ function M.show_goal_menu()
 
   M.select(goals, {
     prompt = 'Maven Goal',
+    on_back = on_back,
     format_item = function(goal)
       return goal.label
     end,
   }, function(choice)
     if not choice then return end
     if choice.needs_profile then
-      M.show_profile_menu(choice.goal)
+      M.show_profile_menu(choice.goal, function()
+        M.show_goal_menu(on_back)
+      end)
     elseif choice.needs_options then
       M.show_options_menu(choice.goal)
     else
@@ -537,7 +638,7 @@ function M.get_common_goals()
   }
 end
 
-function M.show_profile_menu(goal)
+function M.show_profile_menu(goal, on_back)
   local project = require('marvin.project').get_project()
 
   if not project or not project.info or #project.info.profiles == 0 then
@@ -556,6 +657,7 @@ function M.show_profile_menu(goal)
 
   M.select(profiles, {
     prompt = 'Select Profile',
+    on_back = on_back,
   }, function(choice)
     if not choice then return end
 
