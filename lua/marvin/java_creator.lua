@@ -58,7 +58,7 @@ local function scan_packages()
   return package_list
 end
 
--- Create package selector with modern UI (FIXED)
+-- FIXED: Create package selector that stays in normal mode
 function M.select_package(callback)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
@@ -67,39 +67,41 @@ function M.select_package(callback)
   local current_package = templates.get_package_from_path()
   local default_package = current_package or templates.get_default_package()
 
-  -- Build package items (compact - no descriptions)
+  -- Build package items for select menu
   local package_items = {}
 
   -- Add current/default at top
   table.insert(package_items, {
     value = default_package,
-    label = '📁 ' .. default_package .. ' (default)',
-    icon = nil -- Icon in label already
+    label = default_package,
+    icon = '📁',
+    desc = 'Default package'
   })
 
   -- Add new package option
   table.insert(package_items, {
-    value = 'new',
-    label = '✨ Create New Package',
-    icon = nil
+    value = '__CREATE_NEW__',
+    label = 'Create New Package',
+    icon = '✨',
+    desc = 'Enter custom package name'
   })
 
-  -- Add existing packages (no icons, no descriptions for compactness)
+  -- Add existing packages
   if #packages > 0 then
     for _, pkg in ipairs(packages) do
       if pkg ~= default_package then
         table.insert(package_items, {
           value = pkg,
           label = pkg,
-          icon = nil -- No icon = more compact
+          desc = 'Existing package'
         })
       end
     end
   end
 
-  -- FIXED: Use select which stays in normal mode
+  -- Use select which stays in normal mode
   ui.select(package_items, {
-    prompt = 'Select Package',
+    prompt = '📦 Select Package',
     format_item = function(item)
       return item.label
     end,
@@ -109,8 +111,8 @@ function M.select_package(callback)
       return
     end
 
-    -- FIXED: Only use input when explicitly creating new package
-    if choice.value == 'new' then
+    -- Only switch to input mode when explicitly creating new package
+    if choice.value == '__CREATE_NEW__' then
       vim.schedule(function()
         ui.input({
           prompt = '📦 New Package Name',
@@ -124,7 +126,7 @@ function M.select_package(callback)
         end)
       end)
     else
-      -- For existing packages, return immediately (stay in normal mode)
+      -- For existing packages, return immediately (stays in normal mode)
       callback(choice.value)
     end
   end)
@@ -144,7 +146,7 @@ function M.create_file_interactive(type_name, options)
       return
     end
 
-    -- Step 2: Select package (stays in normal mode)
+    -- Step 2: Select package (stays in normal mode unless creating new)
     vim.schedule(function()
       M.select_package(function(package_name)
         if not package_name then
@@ -295,7 +297,7 @@ function M.show_menu()
     { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class' },
     { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class' },
     { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class' },
-    { id = 'builder', label = 'Builder Pattern', icon = '🗒️', desc = 'Class with builder pattern' },
+    { id = 'builder', label = 'Builder Pattern', icon = '🗂️', desc = 'Class with builder pattern' },
   }
 
   ui.select(types, {
@@ -341,7 +343,7 @@ function M.show_menu()
           options.fields = fields
           M.create_file_interactive('Builder', options)
         end
-      end, '🗒️  Builder Fields (Type name, ...)')
+      end, '🗂️ Builder Fields (Type name, ...)')
     end
   end)
 end
