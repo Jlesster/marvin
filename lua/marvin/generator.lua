@@ -1,6 +1,6 @@
 local M = {}
 
--- Create a centered floating window
+-- Create a centered floating window with modern styling
 local function create_popup(title, width, height)
   local buf = vim.api.nvim_create_buf(false, true)
 
@@ -11,44 +11,7 @@ local function create_popup(title, width, height)
   local row = math.floor((ui.height - win_height) / 2)
   local col = math.floor((ui.width - win_width) / 2)
 
-  -- Create border buffer for title
-  local border_buf = vim.api.nvim_create_buf(false, true)
-
-  local border_opts = {
-    relative = 'editor',
-    width = win_width + 2,
-    height = win_height + 2,
-    row = row - 1,
-    col = col - 1,
-    style = 'minimal',
-  }
-
-  local border_win = vim.api.nvim_open_win(border_buf, false, border_opts)
-
-  -- Draw border with rounded corners
-  local border_lines = { '╭' .. string.rep('─', win_width) .. '╮' }
-  local middle_line = '│' .. string.rep(' ', win_width) .. '│'
-  for i = 1, win_height do
-    table.insert(border_lines, middle_line)
-  end
-  table.insert(border_lines, '╰' .. string.rep('─', win_width) .. '╯')
-
-  -- Add title
-  if title then
-    local title_str = ' ' .. title .. ' '
-    local padding = win_width - #title_str
-    local left_pad = math.floor(padding / 2)
-    local right_pad = padding - left_pad
-    border_lines[1] = '╭' .. string.rep('─', left_pad) .. title_str .. string.rep('─', right_pad) .. '╮'
-  end
-
-  vim.api.nvim_buf_set_lines(border_buf, 0, -1, false, border_lines)
-  vim.api.nvim_buf_set_option(border_buf, 'modifiable', false)
-
-  -- Set border colors
-  vim.api.nvim_win_set_option(border_win, 'winhl', 'Normal:FloatBorder')
-
-  -- Create main window
+  -- Window options with border
   local opts = {
     relative = 'editor',
     width = win_width,
@@ -56,13 +19,27 @@ local function create_popup(title, width, height)
     row = row,
     col = col,
     style = 'minimal',
+    border = {
+      { '╭', 'FloatBorder' },
+      { '─', 'FloatBorder' },
+      { '╮', 'FloatBorder' },
+      { '│', 'FloatBorder' },
+      { '╯', 'FloatBorder' },
+      { '─', 'FloatBorder' },
+      { '╰', 'FloatBorder' },
+      { '│', 'FloatBorder' },
+    },
+    title = title and { { ' ' .. title .. ' ', 'FloatTitle' } } or nil,
+    title_pos = 'center',
   }
 
   local win = vim.api.nvim_open_win(buf, true, opts)
-  vim.api.nvim_win_set_option(win, 'winhl', 'Normal:Normal')
+
+  -- Set window options
+  vim.api.nvim_win_set_option(win, 'winhl', 'Normal:Normal,FloatBorder:FloatBorder')
   vim.api.nvim_win_set_option(win, 'cursorline', true)
 
-  return buf, win, border_buf, border_win
+  return buf, win
 end
 
 -- Project generation wizard with custom UI
@@ -77,7 +54,7 @@ function M.show_archetype_wizard()
   -- Header section
   table.insert(archetypes, {
     type = 'header',
-    label = 'Popular Archetypes',
+    label = '✨ Popular Archetypes',
     selectable = false,
   })
 
@@ -102,7 +79,7 @@ function M.show_archetype_wizard()
   -- Advanced options header
   table.insert(archetypes, {
     type = 'header',
-    label = 'Advanced Options',
+    label = '🔧 Advanced Options',
     selectable = false,
   })
 
@@ -137,7 +114,7 @@ function M.show_archetype_wizard()
   })
 
   -- Create popup
-  local buf, win, border_buf, border_win = create_popup('🔨 Maven Project Generator', 0.65, 0.75)
+  local buf, win = create_popup('🔨 Maven Project Generator', 0.7, 0.8)
 
   -- Build content with better formatting
   local lines = {}
@@ -151,46 +128,52 @@ function M.show_archetype_wizard()
   for idx, archetype in ipairs(archetypes) do
     if archetype.type == 'header' then
       table.insert(lines, '')
-      table.insert(lines, '  ═══ ' .. archetype.label .. ' ═══')
-      table.insert(lines, '')
+      table.insert(lines, '  ' .. archetype.label)
+      table.insert(lines, '  ' .. string.rep('─', 64))
     elseif archetype.type == 'separator' then
       table.insert(lines, '')
-      table.insert(lines, '  ' .. string.rep('─', 60))
     elseif archetype.type == 'archetype' or archetype.type == 'action' then
       local line_num = #lines + 1
-      table.insert(lines, string.format('  %s  %s', archetype.icon, archetype.label))
-      if archetype.description then
-        table.insert(lines, '     ' .. archetype.description)
-      end
       table.insert(lines, '')
+      table.insert(lines, '    ' .. archetype.icon .. '  ' .. archetype.label)
+      if archetype.description then
+        table.insert(lines, '       ' .. archetype.description)
+      end
 
       if archetype.selectable then
-        table.insert(selectable_lines, line_num)
-        line_to_item[line_num] = archetype
+        table.insert(selectable_lines, line_num + 1) -- The line with icon and label
+        line_to_item[line_num + 1] = archetype
       end
     end
   end
 
   table.insert(lines, '')
-  table.insert(lines, '  ╭─────────────────────────────────────────────────────────╮')
-  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc │')
-  table.insert(lines, '  ╰─────────────────────────────────────────────────────────╯')
+  table.insert(lines, '')
+  table.insert(lines, '  ┌' .. string.rep('─', 64) .. '┐')
+  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc  │')
+  table.insert(lines, '  └' .. string.rep('─', 64) .. '┘')
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
   vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
 
-  -- Add syntax highlighting
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'marvin-wizard')
+  -- Create namespace for highlights
+  local ns = vim.api.nvim_create_namespace('marvin_wizard')
 
-  -- Highlight headers and separators
+  -- Add syntax highlighting
   for i, line in ipairs(lines) do
-    if line:match('═══') then
-      vim.api.nvim_buf_add_highlight(buf, -1, 'Title', i - 1, 0, -1)
-    elseif line:match('─────') and not line:match('╭') then
-      vim.api.nvim_buf_add_highlight(buf, -1, 'Comment', i - 1, 0, -1)
-    elseif line:match('│') then
-      vim.api.nvim_buf_add_highlight(buf, -1, 'Comment', i - 1, 0, -1)
+    if line:match('^%s+✨') or line:match('^%s+🔧') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
+    elseif line:match('^%s+─') and not line:match('┌') and not line:match('└') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
+    elseif line:match('┌') or line:match('└') or line:match('│') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
+    elseif line:match('^%s+%s+%s+[📦🔍⚙️⚡🌐📋]') then
+      -- Highlight icon
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Special', i - 1, 0, -1)
+    elseif line:match('^%s+%s+%s+%s+%s+%s+') then
+      -- Description text
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
     end
   end
 
@@ -198,13 +181,16 @@ function M.show_archetype_wizard()
   local current_idx = 1
   local current_line = selectable_lines[current_idx]
 
+  local highlight_ns = vim.api.nvim_create_namespace('marvin_selection')
+
   local function highlight_line(line_num)
-    vim.api.nvim_buf_clear_namespace(buf, 999, 0, -1)
+    vim.api.nvim_buf_clear_namespace(buf, highlight_ns, 0, -1)
     if line_num then
-      vim.api.nvim_buf_add_highlight(buf, 999, 'Visual', line_num - 1, 0, -1)
+      -- Highlight the main line
+      vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'CursorLine', line_num - 1, 0, -1)
       -- Also highlight description line if it exists
-      if lines[line_num + 1] and lines[line_num + 1]:match('^%s+%S') and not lines[line_num + 1]:match('^%s+[═─╭╰│]') then
-        vim.api.nvim_buf_add_highlight(buf, 999, 'Visual', line_num, 0, -1)
+      if lines[line_num + 1] and lines[line_num + 1]:match('^%s+%s+%s+%s+%s+%s+') then
+        vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'CursorLine', line_num, 0, -1)
       end
     end
   end
@@ -217,9 +203,8 @@ function M.show_archetype_wizard()
     local selected = line_to_item[current_line]
     if not selected then return end
 
-    -- Close windows
+    -- Close window
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
 
     if selected.type == 'archetype' then
       M.show_project_details_wizard(selected.id)
@@ -261,11 +246,9 @@ function M.show_archetype_wizard()
   vim.keymap.set('n', '<CR>', select_item, opts)
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
   vim.keymap.set('n', 'q', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 end
 
@@ -307,37 +290,39 @@ function M.show_local_archetypes()
 end
 
 function M.show_archetype_selection_list(archetypes, title)
-  local buf, win, border_buf, border_win = create_popup('📦 ' .. title, 0.6, 0.7)
+  local buf, win = create_popup('📦 ' .. title, 0.65, 0.75)
 
-  local lines = { '', '  Select an archetype:', '' }
+  local lines = { '', '  Select an archetype:', '', '' }
+  local selectable_start = #lines + 1
+
   for i, archetype in ipairs(archetypes) do
-    table.insert(lines, string.format('  %d. %s', i, archetype))
+    table.insert(lines, '    ' .. i .. '. ' .. archetype)
+    table.insert(lines, '')
   end
 
   table.insert(lines, '')
-  table.insert(lines, '  ───────────────────────────────────')
-  table.insert(lines, '  Use number or j/k to navigate')
-  table.insert(lines, '  Press Enter to select')
-  table.insert(lines, '  Press q or Esc to cancel')
+  table.insert(lines, '  ┌' .. string.rep('─', 56) .. '┐')
+  table.insert(lines, '  │  Use j/k or ↑/↓ to navigate  │  Enter to select  │  q to cancel  │')
+  table.insert(lines, '  └' .. string.rep('─', 56) .. '┘')
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
 
-  local current_line = 4
+  local current_line = selectable_start
+  local ns = vim.api.nvim_create_namespace('marvin_selection')
 
   local function highlight_line(line_num)
-    vim.api.nvim_buf_clear_namespace(buf, -1, 0, -1)
-    vim.api.nvim_buf_add_highlight(buf, -1, 'Visual', line_num - 1, 0, -1)
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    vim.api.nvim_buf_add_highlight(buf, ns, 'CursorLine', line_num - 1, 0, -1)
   end
 
   highlight_line(current_line)
   vim.api.nvim_win_set_cursor(win, { current_line, 0 })
 
   local function select_archetype()
-    local idx = current_line - 3
+    local idx = math.floor((current_line - selectable_start) / 2) + 1
     if idx > 0 and idx <= #archetypes then
       vim.api.nvim_win_close(win, true)
-      vim.api.nvim_win_close(border_win, true)
       M.show_project_details_wizard(archetypes[idx])
     end
   end
@@ -345,16 +330,17 @@ function M.show_archetype_selection_list(archetypes, title)
   local opts = { noremap = true, silent = true, buffer = buf }
 
   vim.keymap.set('n', 'j', function()
-    if current_line < #archetypes + 3 then
-      current_line = current_line + 1
+    local max_line = selectable_start + (#archetypes - 1) * 2
+    if current_line < max_line then
+      current_line = current_line + 2
       vim.api.nvim_win_set_cursor(win, { current_line, 0 })
       highlight_line(current_line)
     end
   end, opts)
 
   vim.keymap.set('n', 'k', function()
-    if current_line > 4 then
-      current_line = current_line - 1
+    if current_line > selectable_start then
+      current_line = current_line - 2
       vim.api.nvim_win_set_cursor(win, { current_line, 0 })
       highlight_line(current_line)
     end
@@ -363,11 +349,9 @@ function M.show_archetype_selection_list(archetypes, title)
   vim.keymap.set('n', '<CR>', select_archetype, opts)
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
   vim.keymap.set('n', 'q', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 end
 
@@ -432,7 +416,7 @@ function M.show_custom_archetype_input()
 end
 
 function M.show_project_details_wizard(archetype)
-  local buf, win, border_buf, border_win = create_popup('📝 Project Details', 0.7, 0.65)
+  local buf, win = create_popup('📝 Project Configuration', 0.75, 0.7)
 
   local details = {
     group_id = 'com.example',
@@ -456,7 +440,8 @@ function M.show_project_details_wizard(archetype)
     table.insert(lines, '')
     table.insert(lines, '  📦 Creating: ' .. M.format_archetype_display(archetype))
     table.insert(lines, '')
-    table.insert(lines, '  ═══ Project Configuration ═══')
+    table.insert(lines, '  ✨ Project Configuration')
+    table.insert(lines, '  ' .. string.rep('─', 68))
     table.insert(lines, '')
 
     for i, field in ipairs(fields) do
@@ -466,64 +451,61 @@ function M.show_project_details_wizard(archetype)
       end
 
       local is_current = i == current_field
-      local prefix = is_current and '▶ ' or '  '
+      local prefix = is_current and '  ▶' or '   '
       local display_value = value ~= '' and value or field.placeholder
 
       -- Field label
-      table.insert(lines, prefix .. field.label .. ':')
+      table.insert(lines, prefix .. ' ' .. field.label)
 
-      -- Field value with cursor indicator
-      local value_line = '    ' .. display_value
+      -- Field value
+      local value_line = '      ' .. display_value
       if is_current then
-        value_line = value_line .. ' █'
+        value_line = value_line .. ' ◀'
       end
       table.insert(lines, value_line)
 
-      -- Help text
+      -- Help text (only for current field)
       if is_current then
-        table.insert(lines, '    ↳ ' .. field.help)
+        table.insert(lines, '      ↳ ' .. field.help)
       end
 
       table.insert(lines, '')
     end
 
-    table.insert(lines, '  ═══ Preview ═══')
+    table.insert(lines, '  📋 Preview')
+    table.insert(lines, '  ' .. string.rep('─', 68))
     table.insert(lines, '')
-    table.insert(lines, '  Maven Coordinates:')
-    table.insert(lines, '    ' .. details.group_id .. ':' .. details.artifact_id .. ':' .. details.version)
-    table.insert(lines, '')
-    table.insert(lines, '  Package Structure:')
+    table.insert(lines,
+      '    Maven Coordinates: ' .. details.group_id .. ':' .. details.artifact_id .. ':' .. details.version)
     local pkg = details.package ~= '' and details.package or details.group_id
-    table.insert(lines, '    ' .. pkg:gsub('%.', '/') .. '/')
+    table.insert(lines, '    Package Structure: ' .. pkg:gsub('%.', '/') .. '/')
     table.insert(lines, '')
-    table.insert(lines, '  ╭───────────────────────────────────────────────────────────────╮')
-    table.insert(lines, '  │  Tab/Shift-Tab: Navigate  │  Enter: Edit  │  Ctrl-G: Generate  │')
-    table.insert(lines, '  ╰───────────────────────────────────────────────────────────────╯')
+    table.insert(lines, '')
+    table.insert(lines, '  ┌' .. string.rep('─', 68) .. '┐')
+    table.insert(lines, '  │  Tab/Shift-Tab: Navigate  │  Enter: Edit  │  Ctrl-G: Generate  │  q: Cancel  │')
+    table.insert(lines, '  └' .. string.rep('─', 68) .. '┘')
 
     vim.api.nvim_buf_set_option(buf, 'modifiable', true)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_buf_set_option(buf, 'modifiable', false)
 
-    -- Highlight current field
-    vim.api.nvim_buf_clear_namespace(buf, 999, 0, -1)
+    -- Highlight
+    local ns = vim.api.nvim_create_namespace('marvin_wizard')
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
 
-    -- Find and highlight the current field's lines
-    local line_offset = 6       -- Starting line for fields
-    for i = 1, current_field do
-      local lines_per_field = 4 -- label + value + help + blank
-      if i == current_field then
-        local start_line = line_offset + (i - 1) * lines_per_field
-        vim.api.nvim_buf_add_highlight(buf, 999, 'Visual', start_line - 1, 0, -1)
-        vim.api.nvim_buf_add_highlight(buf, 999, 'Visual', start_line, 0, -1)
-        vim.api.nvim_buf_add_highlight(buf, 999, 'CursorLine', start_line + 1, 0, -1)
-        break
-      end
-    end
-
-    -- Highlight headers
     for i, line in ipairs(lines) do
-      if line:match('═══') then
-        vim.api.nvim_buf_add_highlight(buf, -1, 'Title', i - 1, 0, -1)
+      if line:match('^%s+✨') or line:match('^%s+📋') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
+      elseif line:match('^%s+─') and not line:match('┌') and not line:match('└') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
+      elseif line:match('┌') or line:match('└') or line:match('│') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
+      elseif line:match('^%s+▶') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'CursorLine', i - 1, 0, -1)
+      elseif line:match('◀') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'CursorLine', i - 1, 0, -1)
+      elseif line:match('↳') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
       end
     end
   end
@@ -546,13 +528,11 @@ function M.show_project_details_wizard(archetype)
   end
 
   local function generate_project()
-    -- Set package to group_id if not specified
     if details.package == '' then
       details.package = details.group_id
     end
 
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
 
     M.show_directory_selector(function(directory)
       if directory then
@@ -577,21 +557,19 @@ function M.show_project_details_wizard(archetype)
 
   vim.keymap.set('n', '<CR>', edit_field, opts)
   vim.keymap.set('n', '<C-g>', generate_project, opts)
-  vim.keymap.set('n', 'e', edit_field, opts) -- Also allow 'e' for edit
+  vim.keymap.set('n', 'e', edit_field, opts)
 
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 
   vim.keymap.set('n', 'q', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 end
 
 function M.show_directory_selector(callback)
-  local buf, win, border_buf, border_win = create_popup('📁 Select Directory', 0.6, 0.4)
+  local buf, win = create_popup('📁 Select Directory', 0.65, 0.45)
 
   local current_dir = vim.fn.getcwd()
   local home_dir = os.getenv('HOME') or os.getenv('USERPROFILE')
@@ -600,45 +578,53 @@ function M.show_directory_selector(callback)
     '',
     '  Where should the project be created?',
     '',
-    '  ═══ Quick Options ═══',
+    '  ✨ Quick Options',
+    '  ' .. string.rep('─', 60),
     '',
-    '  1. Current Directory',
-    '     ' .. current_dir,
+    '    1. Current Directory',
+    '       ' .. current_dir,
     '',
-    '  2. Home Directory',
-    '     ' .. home_dir,
+    '    2. Home Directory',
+    '       ' .. home_dir,
     '',
-    '  3. Custom Path',
-    '     Enter a custom directory path',
+    '    3. Custom Path',
+    '       Enter a custom directory path',
     '',
-    '  ╭─────────────────────────────────────────────────╮',
-    '  │  1/2/3: Select option  │  c: Custom  │  q: Cancel  │',
-    '  ╰─────────────────────────────────────────────────╯',
+    '',
+    '  ┌' .. string.rep('─', 60) .. '┐',
+    '  │  1/2/3: Select option  │  c: Custom  │  Enter: Current  │  q: Cancel  │',
+    '  └' .. string.rep('─', 60) .. '┘',
   }
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
 
   -- Highlight
-  vim.api.nvim_buf_add_highlight(buf, -1, 'Title', 3, 0, -1)
+  local ns = vim.api.nvim_create_namespace('marvin_wizard')
+  for i, line in ipairs(lines) do
+    if line:match('✨') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
+    elseif line:match('^%s+─') and not line:match('┌') and not line:match('└') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
+    elseif line:match('┌') or line:match('└') or line:match('│') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
+    end
+  end
 
   local opts = { noremap = true, silent = true, buffer = buf }
 
   vim.keymap.set('n', '1', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     callback(current_dir)
   end, opts)
 
   vim.keymap.set('n', '2', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     callback(home_dir)
   end, opts)
 
   vim.keymap.set('n', '3', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
 
     vim.ui.input({
       prompt = 'Directory path: ',
@@ -653,7 +639,6 @@ function M.show_directory_selector(callback)
 
   vim.keymap.set('n', 'c', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
 
     vim.ui.input({
       prompt = 'Directory path: ',
@@ -668,28 +653,24 @@ function M.show_directory_selector(callback)
 
   vim.keymap.set('n', '<CR>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     callback(current_dir)
   end, opts)
 
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     callback(nil)
   end, opts)
 
   vim.keymap.set('n', 'q', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     callback(nil)
   end, opts)
 end
 
 function M.format_archetype_name(archetype_id)
-  -- Handle full coordinates
   if archetype_id:match(':') then
     local parts = vim.split(archetype_id, ':')
-    return parts[#parts - 1] or archetype_id -- Return artifactId
+    return parts[#parts - 1] or archetype_id
   end
 
   local name = archetype_id:gsub('maven%-archetype%-', '')
@@ -698,7 +679,7 @@ end
 
 function M.format_archetype_display(archetype_id)
   if archetype_id:match(':') then
-    return archetype_id -- Show full coordinates
+    return archetype_id
   end
   return M.format_archetype_name(archetype_id)
 end
@@ -730,10 +711,9 @@ function M.generate(archetype, details, directory)
   local cmd_parts = {
     config.maven_command,
     'archetype:generate',
-    '-B', -- Batch mode
+    '-B',
   }
 
-  -- Handle full coordinates vs simple archetype ID
   if #archetype_parts >= 2 then
     table.insert(cmd_parts, '-DarchetypeGroupId=' .. archetype_parts[1])
     table.insert(cmd_parts, '-DarchetypeArtifactId=' .. archetype_parts[2])
@@ -744,7 +724,6 @@ function M.generate(archetype, details, directory)
     table.insert(cmd_parts, '-DarchetypeArtifactId=' .. archetype)
   end
 
-  -- Add project details
   table.insert(cmd_parts, '-DgroupId=' .. details.group_id)
   table.insert(cmd_parts, '-DartifactId=' .. details.artifact_id)
   table.insert(cmd_parts, '-Dversion=' .. details.version)
@@ -754,10 +733,8 @@ function M.generate(archetype, details, directory)
 
   ui.notify('🔨 Generating project...', vim.log.levels.INFO)
 
-  -- Show progress popup
   M.show_generation_progress(details.artifact_id)
 
-  -- Run the command
   vim.fn.jobstart(cmd, {
     cwd = directory,
     on_exit = function(_, exit_code, _)
@@ -772,7 +749,7 @@ function M.generate(archetype, details, directory)
 end
 
 function M.show_generation_progress(artifact_id)
-  local buf, win, border_buf, border_win = create_popup('🔨 Generating Project', 0.5, 0.3)
+  local buf, win = create_popup('🔨 Generating Project', 0.5, 0.35)
 
   local frames = { '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' }
   local frame = 1
@@ -780,12 +757,14 @@ function M.show_generation_progress(artifact_id)
   local function update()
     local lines = {
       '',
-      '  ' .. frames[frame] .. '  Creating ' .. artifact_id .. '...',
       '',
-      '  Maven is downloading dependencies and generating',
-      '  project structure. This may take a moment.',
+      '    ' .. frames[frame] .. '  Creating ' .. artifact_id .. '...',
       '',
-      '  Please wait...',
+      '    Maven is downloading dependencies and',
+      '    generating project structure.',
+      '',
+      '    Please wait...',
+      '',
       '',
     }
 
@@ -796,7 +775,6 @@ function M.show_generation_progress(artifact_id)
     frame = (frame % #frames) + 1
   end
 
-  -- Animate
   local timer = vim.loop.new_timer()
   timer:start(0, 100, vim.schedule_wrap(function()
     if vim.api.nvim_win_is_valid(win) then
@@ -806,18 +784,13 @@ function M.show_generation_progress(artifact_id)
     end
   end))
 
-  -- Store for cleanup
   M._progress_win = win
-  M._progress_border_win = border_win
   M._progress_timer = timer
 end
 
 function M.close_progress_window()
   if M._progress_win and vim.api.nvim_win_is_valid(M._progress_win) then
     vim.api.nvim_win_close(M._progress_win, true)
-  end
-  if M._progress_border_win and vim.api.nvim_win_is_valid(M._progress_border_win) then
-    vim.api.nvim_win_close(M._progress_border_win, true)
   end
   if M._progress_timer then
     M._progress_timer:stop()
@@ -832,37 +805,45 @@ function M.on_generation_complete(details, directory)
 
   ui.notify('✅ Project generated successfully!', vim.log.levels.INFO)
 
-  -- Show completion popup
-  local buf, win, border_buf, border_win = create_popup('✅ Success!', 0.6, 0.45)
+  local buf, win = create_popup('✅ Success!', 0.65, 0.5)
 
   local lines = {
     '',
-    '  🎉 Project created successfully!',
     '',
-    '  ═══ Project Details ═══',
+    '    🎉 Project created successfully!',
     '',
-    '  Name: ' .. details.artifact_id,
-    '  Location: ' .. project_path,
-    '  Package: ' .. details.package,
+    '  ✨ Project Details',
+    '  ' .. string.rep('─', 60),
     '',
-    '  ═══ Next Steps ═══',
+    '    Name:     ' .. details.artifact_id,
+    '    Location: ' .. project_path,
+    '    Package:  ' .. details.package,
     '',
-    '  1. Press Enter to open the project',
-    '  2. Press o to open in file manager',
-    '  3. Press q to close this dialog',
+    '  📝 Next Steps',
+    '  ' .. string.rep('─', 60),
     '',
-    '  ╭─────────────────────────────────────────────╮',
-    '  │  Enter: Open  │  o: File Manager  │  q: Close  │',
-    '  ╰─────────────────────────────────────────────╯',
+    '    • Press Enter to open the project',
+    '    • Press o to open in file manager',
+    '    • Press q to close this dialog',
+    '',
+    '',
+    '  ┌' .. string.rep('─', 60) .. '┐',
+    '  │  Enter: Open Project  │  o: File Manager  │  q: Close  │',
+    '  └' .. string.rep('─', 60) .. '┘',
   }
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
 
   -- Highlight
+  local ns = vim.api.nvim_create_namespace('marvin_wizard')
   for i, line in ipairs(lines) do
-    if line:match('═══') then
-      vim.api.nvim_buf_add_highlight(buf, -1, 'Title', i - 1, 0, -1)
+    if line:match('✨') or line:match('📝') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
+    elseif line:match('^%s+─') and not line:match('┌') and not line:match('└') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
+    elseif line:match('┌') or line:match('└') or line:match('│') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
     end
   end
 
@@ -870,27 +851,22 @@ function M.on_generation_complete(details, directory)
 
   vim.keymap.set('n', '<CR>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
     vim.cmd('cd ' .. vim.fn.fnameescape(project_path))
     vim.cmd('edit ' .. vim.fn.fnameescape(project_path .. '/pom.xml'))
   end, opts)
 
   vim.keymap.set('n', 'o', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
-    -- Open in file manager
     local open_cmd = vim.fn.has('mac') == 1 and 'open' or (vim.fn.has('win32') == 1 and 'explorer' or 'xdg-open')
     vim.fn.jobstart(open_cmd .. ' ' .. vim.fn.shellescape(project_path))
   end, opts)
 
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 
   vim.keymap.set('n', 'q', function()
     vim.api.nvim_win_close(win, true)
-    vim.api.nvim_win_close(border_win, true)
   end, opts)
 end
 
