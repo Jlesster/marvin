@@ -19,11 +19,12 @@ M.defaults = {
     test = '<leader>Mt',
     package = '<leader>Mp',
     install = '<leader>Mi',
+    new_project = '<leader>Mn', -- New keymap for project creation
   },
 
   archetypes = {
     'maven-archetype-quickstart',
-    'maven-archetype-my-custom-archetype',
+    'maven-archetype-webapp',
     'maven-archetype-simple',
   },
 }

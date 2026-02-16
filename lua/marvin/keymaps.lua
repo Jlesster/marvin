@@ -42,6 +42,13 @@ function M.setup(config)
       silent = true,
     })
   end
+
+  if keymaps.new_project then
+    vim.keymap.set('n', keymaps.new_project, ':MavenNew<CR>', {
+      desc = 'Create new Maven project',
+      silent = true,
+    })
+  end
 end
 
 return M
