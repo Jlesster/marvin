@@ -197,11 +197,11 @@ function M.show()
   -- Highlighting
   local ns = vim.api.nvim_create_namespace('marvin_dashboard')
   for i, line in ipairs(lines) do
-    if line:match(' MARVIN') then
+    if line:match('⚡ MARVIN') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
-    elseif line:match('Project:') or line:match(' ') then
+    elseif line:match('Project:') or line:match('📁') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'String', i - 1, 0, -1)
-    elseif line:match('󱁻 ') or line:match('󱑤 ') or line:match('🔧') then
+    elseif line:match('🚀') or line:match('📚') or line:match('🔧') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
     elseif line:match('═') or line:match('─') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
