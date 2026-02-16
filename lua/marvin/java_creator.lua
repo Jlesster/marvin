@@ -1,6 +1,6 @@
 local M = {}
 
--- Scan for packages in project (improved filtering)
+-- Scan for packages in project (all directories under src)
 local function scan_packages()
   local project = require('marvin.project').get_project()
 
@@ -16,8 +16,8 @@ local function scan_packages()
 
   for _, src_path in ipairs(src_paths) do
     if vim.fn.isdirectory(src_path) == 1 then
-      -- Use find to get all directories
-      local cmd = string.format('find "%s" -type d 2>/dev/null', src_path)
+      -- Use find to get all directories, excluding hidden ones
+      local cmd = string.format('find "%s" -type d -not -path "*/\\.*" 2>/dev/null', src_path)
       local handle = io.popen(cmd)
 
       if handle then
@@ -27,21 +27,9 @@ local function scan_packages()
             -- Convert path to package name
             local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
 
-            -- Filter criteria (relaxed)
+            -- Only requirement: not empty and not already added
             if package ~= '' and not packages[package] then
-              -- Skip hidden directories (starting with . or containing /.)
-              local has_hidden = package:match('^%.') or dir:match('%/%.')
-
-              -- Allow deeper nesting (up to 10 levels instead of 5)
-              local depth = select(2, package:gsub('%.', '.'))
-
-              -- Check if directory contains Java files OR subdirectories with Java files
-              local has_java = vim.fn.glob(dir .. '/*.java') ~= '' or
-                  vim.fn.glob(dir .. '/**/*.java') ~= ''
-
-              if not has_hidden and depth <= 10 and has_java then
-                packages[package] = true
-              end
+              packages[package] = true
             end
           end
         end
