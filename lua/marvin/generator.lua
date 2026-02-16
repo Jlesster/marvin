@@ -150,7 +150,7 @@ function M.show_archetype_wizard()
   table.insert(lines, '')
   table.insert(lines, '')
   table.insert(lines, '  ┌' .. string.rep('─', 70) .. '┐')
-  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc        │')
+  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc            │')
   table.insert(lines, '  └' .. string.rep('─', 70) .. '┘')
 
   -- Calculate window size based on content
