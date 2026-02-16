@@ -25,7 +25,7 @@ local function create_popup(title, width, height)
   local win = vim.api.nvim_open_win(buf, true, opts)
 
   vim.api.nvim_set_option_value('winhl', 'Normal:NormalFloat,FloatBorder:FloatBorder', { win = win })
-  vim.api.nvim_set_option_value('cursorline', false, { win = win }) -- Disable default cursorline
+  vim.api.nvim_set_option_value('cursorline', false, { win = win })
   vim.api.nvim_set_option_value('wrap', false, { win = win })
 
   return buf, win
@@ -47,7 +47,7 @@ function M.show()
   local project = require('marvin.project')
   local in_maven_project = project.detect()
 
-  -- Build menu items
+  -- Build menu items with consistent colors
   local menu_items = {
     { type = 'action', id = 'new_project', label = 'Create New Maven Project', icon = '🏗️', desc = 'Generate project from archetype', color = 'DiagnosticInfo' },
     { type = 'action', id = 'new_java_file', label = 'Create Java File', icon = '☕', desc = 'Class, interface, enum, etc.', color = 'DiagnosticWarn' },
@@ -60,16 +60,16 @@ function M.show()
       'DiagnosticOk' })
 
     table.insert(menu_items, { type = 'separator' })
-    table.insert(menu_items, { type = 'header', label = '📦 Dependencies' })
+    table.insert(menu_items, { type = 'header', label = '📦 Dependencies', color = '@function' })
     table.insert(menu_items,
       { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📋', desc = 'Jackson 2.18.2', color =
       '@string' })
     table.insert(menu_items,
       { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'LWJGL 3.3.6 + natives', color =
-      '@function' })
+      '@string' })
 
     table.insert(menu_items, { type = 'separator' })
-    table.insert(menu_items, { type = 'header', label = '🔧 Build Tools' })
+    table.insert(menu_items, { type = 'header', label = '🔧 Build Tools', color = '@type' })
     table.insert(menu_items,
       { type = 'action', id = 'set_java_version', label = 'Set Java Version', icon = '☕', desc =
       'Configure compiler version', color = '@variable' })
@@ -77,7 +77,7 @@ function M.show()
     if not has_assembly_plugin() then
       table.insert(menu_items,
         { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Assembly Plugin', color =
-        '@type' })
+        '@variable' })
     end
 
     table.insert(menu_items,
@@ -87,7 +87,7 @@ function M.show()
     if has_assembly_plugin() then
       table.insert(menu_items,
         { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎁', desc = 'JAR with dependencies', color =
-        '@constant' })
+        '@keyword' })
     end
 
     table.insert(menu_items,
@@ -102,7 +102,7 @@ function M.show()
     local selectable = {}
     local action_map = {}
 
-    -- Header with gradient effect
+    -- Header
     table.insert(lines, '')
     table.insert(lines, '  ⚡ MARVIN - Maven for Neovim')
     table.insert(highlights, { line = #lines - 1, hl_group = '@constructor', col_start = 0, col_end = -1 })
@@ -134,7 +134,7 @@ function M.show()
       if item.type == 'header' then
         table.insert(lines, '')
         table.insert(lines, '  ' .. item.label)
-        table.insert(highlights, { line = #lines - 1, hl_group = '@keyword', col_start = 0, col_end = -1 })
+        table.insert(highlights, { line = #lines - 1, hl_group = item.color or '@keyword', col_start = 0, col_end = -1 })
       elseif item.type == 'separator' then
         -- Don't add extra lines
       elseif item.type == 'action' then
@@ -243,6 +243,14 @@ function M.show()
 
   vim.keymap.set('n', 'q', function() vim.api.nvim_win_close(win, true) end, opts)
   vim.keymap.set('n', '<Esc>', function() vim.api.nvim_win_close(win, true) end, opts)
+
+  -- Prevent insert mode
+  vim.keymap.set('n', 'i', '<Nop>', opts)
+  vim.keymap.set('n', 'I', '<Nop>', opts)
+  vim.keymap.set('n', 'a', '<Nop>', opts)
+  vim.keymap.set('n', 'A', '<Nop>', opts)
+  vim.keymap.set('n', 'o', '<Nop>', opts)
+  vim.keymap.set('n', 'O', '<Nop>', opts)
 end
 
 -- Handle dashboard actions

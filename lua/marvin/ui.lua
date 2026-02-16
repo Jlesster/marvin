@@ -75,7 +75,7 @@ local function fuzzy_match(str, pattern)
 
   while pattern_idx <= #pattern and str_idx <= #str do
     if str:sub(str_idx, str_idx) == pattern:sub(pattern_idx, pattern_idx) then
-      score = score + 1 + consecutive * 5 -- Bonus for consecutive matches
+      score = score + 1 + consecutive * 5
       consecutive = consecutive + 1
       pattern_idx = pattern_idx + 1
     else
@@ -85,7 +85,6 @@ local function fuzzy_match(str, pattern)
   end
 
   if pattern_idx > #pattern then
-    -- Bonus for matching at start
     if str:sub(1, #pattern) == pattern then
       score = score + 20
     end
@@ -316,6 +315,14 @@ function M.popup_select(items, opts, callback)
     local char = string.char(i)
     vim.keymap.set('n', char, function() update_search(char) end, map_opts)
   end
+
+  -- CRITICAL: Prevent insert mode
+  vim.keymap.set('n', 'i', '<Nop>', map_opts)
+  vim.keymap.set('n', 'I', '<Nop>', map_opts)
+  vim.keymap.set('n', 'a', function() update_search('a') end, map_opts)
+  vim.keymap.set('n', 'A', function() update_search('A') end, map_opts)
+  vim.keymap.set('n', 'o', function() update_search('o') end, map_opts)
+  vim.keymap.set('n', 'O', function() update_search('O') end, map_opts)
 end
 
 -- Modern input popup
