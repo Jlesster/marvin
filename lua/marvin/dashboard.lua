@@ -205,6 +205,7 @@ function M.show()
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
     elseif line:match('═') or line:match('─') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
+      -- FIX: Escape the square brackets with % to treat them as literal characters
     elseif line:match('%[%]') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Special', i - 1, 0, -1)
     elseif line:match('^%s+[A-Z]') and not line:match('MARVIN') then
