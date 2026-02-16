@@ -33,17 +33,27 @@ local function scan_packages()
     end
   end
 
-  -- Convert to array and sort
+  -- Convert to array and sort intelligently
   local package_list = {}
   for pkg, _ in pairs(packages) do
     table.insert(package_list, pkg)
   end
-  table.sort(package_list)
+
+  -- Sort packages: shorter (parent) packages first, then alphabetically
+  table.sort(package_list, function(a, b)
+    local a_depth = select(2, a:gsub('%.', '.'))
+    local b_depth = select(2, b:gsub('%.', '.'))
+
+    if a_depth == b_depth then
+      return a < b
+    end
+    return a_depth < b_depth
+  end)
 
   return package_list
 end
 
--- Create package selector
+-- Create package selector with modern UI
 function M.select_package(callback)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
@@ -52,25 +62,47 @@ function M.select_package(callback)
   local current_package = templates.get_package_from_path()
   local default_package = current_package or templates.get_default_package()
 
-  -- Add options for new package and default
-  local package_items = {
-    { value = default_package, label = '📍 Current: ' .. default_package, desc = 'Use current/default package' },
-    { value = 'new', label = '✨ Create New Package', desc = 'Enter a new package name' },
-  }
+  -- Build package items with better organization
+  local package_items = {}
 
+  -- Add current/default at top
+  table.insert(package_items, {
+    value = default_package,
+    label = default_package .. ' (current)',
+    desc = 'Use current/default package',
+    icon = '📍'
+  })
+
+  -- Add new package option
+  table.insert(package_items, {
+    value = 'new',
+    label = 'Create New Package',
+    desc = 'Enter a new package name',
+    icon = '✨'
+  })
+
+  -- Add existing packages if any
   if #packages > 0 then
-    table.insert(package_items, { value = 'separator', label = '────────────────────' })
     for _, pkg in ipairs(packages) do
-      table.insert(package_items, {
-        value = pkg,
-        label = '📦 ' .. pkg,
-        desc = 'Existing package',
-      })
+      -- Skip if it's the same as default
+      if pkg ~= default_package then
+        -- Calculate depth for visual indent
+        local depth = select(2, pkg:gsub('%.', '.'))
+        local indent = string.rep('  ', math.min(depth, 3))
+
+        table.insert(package_items, {
+          value = pkg,
+          label = pkg,
+          desc = 'Existing package (' .. depth .. ' levels)',
+          icon = '📦'
+        })
+      end
     end
   end
 
+  -- Use the modern select UI
   ui.select(package_items, {
-    prompt = '📦 Select Package',
+    prompt = 'Select Package',
     format_item = function(item)
       return item.label
     end,
@@ -80,17 +112,17 @@ function M.select_package(callback)
       return
     end
 
-    if choice.value == 'separator' then
-      M.select_package(callback)
-      return
-    end
-
     if choice.value == 'new' then
+      -- Use modern input UI
       ui.input({
-        prompt = '📦 New Package Name: ',
+        prompt = '📦 New Package Name',
         default = default_package,
       }, function(new_package)
-        callback(new_package)
+        if new_package and new_package ~= '' then
+          callback(new_package)
+        else
+          callback(nil)
+        end
       end)
     else
       callback(choice.value)
@@ -106,7 +138,7 @@ function M.create_file_interactive(type_name, options)
 
   -- Step 1: Get class name
   ui.input({
-    prompt = '☕ ' .. type_name .. ' Name: ',
+    prompt = '☕ ' .. type_name .. ' Name',
   }, function(class_name)
     if not class_name or class_name == '' then
       return
@@ -200,12 +232,12 @@ function M.write_file(file_path, lines)
   file:close()
 end
 
--- Prompt for enum values in popup
+-- Prompt for enum values
 function M.prompt_enum_values(callback)
   local ui = require('marvin.ui')
 
   ui.input({
-    prompt = '🔢 Enum Values (comma-separated): ',
+    prompt = '🔢 Enum Values (comma-separated)',
     default = 'VALUE1, VALUE2, VALUE3',
   }, function(input)
     if not input or input == '' then
@@ -222,12 +254,12 @@ function M.prompt_enum_values(callback)
   end)
 end
 
--- Prompt for record/builder fields in popup
+-- Prompt for record/builder fields
 function M.prompt_fields(callback, prompt_text)
   local ui = require('marvin.ui')
 
   ui.input({
-    prompt = prompt_text or '📋 Fields (Type name, ...): ',
+    prompt = prompt_text or '📋 Fields (Type name, ...)',
     default = 'String name, int value',
   }, function(input)
     if not input or input == '' then
@@ -253,15 +285,15 @@ function M.show_menu()
   local ui = require('marvin.ui')
 
   local types = {
-    { id = 'class', label = '☕ Java Class', desc = 'Standard Java class' },
-    { id = 'class_main', label = '🚀 Main Class', desc = 'Class with main method' },
-    { id = 'interface', label = '📋 Interface', desc = 'Java interface' },
-    { id = 'enum', label = '🔢 Enum', desc = 'Enumeration type' },
-    { id = 'record', label = '📦 Record', desc = 'Java record (14+)' },
-    { id = 'abstract', label = '🎨 Abstract Class', desc = 'Abstract class' },
-    { id = 'exception', label = '❌ Exception', desc = 'Custom exception class' },
-    { id = 'test', label = '🧪 JUnit Test', desc = 'JUnit test class' },
-    { id = 'builder', label = '🏗️  Builder Pattern', desc = 'Class with builder pattern' },
+    { id = 'class', label = 'Java Class', icon = '☕', desc = 'Standard Java class' },
+    { id = 'class_main', label = 'Main Class', icon = '🚀', desc = 'Class with main method' },
+    { id = 'interface', label = 'Interface', icon = '📋', desc = 'Java interface' },
+    { id = 'enum', label = 'Enum', icon = '🔢', desc = 'Enumeration type' },
+    { id = 'record', label = 'Record', icon = '📦', desc = 'Java record (14+)' },
+    { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class' },
+    { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class' },
+    { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class' },
+    { id = 'builder', label = 'Builder Pattern', icon = '🏗️', desc = 'Class with builder pattern' },
   }
 
   ui.select(types, {
@@ -291,7 +323,7 @@ function M.show_menu()
           options.fields = fields
           M.create_file_interactive('Record', options)
         end
-      end, '📦 Record Fields (Type name, ...): ')
+      end, '📦 Record Fields (Type name, ...)')
     elseif choice.id == 'abstract' then
       M.create_file_interactive('Abstract Class', options)
     elseif choice.id == 'exception' then
@@ -308,7 +340,7 @@ function M.show_menu()
           options.fields = fields
           M.create_file_interactive('Builder', options)
         end
-      end, '🏗️  Builder Fields (Type name, ...): ')
+      end, '🏗️  Builder Fields (Type name, ...)')
     end
   end)
 end

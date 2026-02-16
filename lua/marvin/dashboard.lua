@@ -25,7 +25,7 @@ local function create_popup(title, width, height)
   local win = vim.api.nvim_open_win(buf, true, opts)
 
   vim.api.nvim_set_option_value('winhl', 'Normal:NormalFloat,FloatBorder:FloatBorder', { win = win })
-  vim.api.nvim_set_option_value('cursorline', true, { win = win })
+  vim.api.nvim_set_option_value('cursorline', false, { win = win }) -- Disable default cursorline
   vim.api.nvim_set_option_value('wrap', false, { win = win })
 
   return buf, win
@@ -49,56 +49,63 @@ function M.show()
 
   -- Build menu items
   local menu_items = {
-    { type = 'action', id = 'new_project', label = 'Create New Maven Project', icon = '🏗️ ', desc = 'Generate project from archetype' },
-    { type = 'action', id = 'new_java_file', label = 'Create Java File', icon = '☕', desc = 'Class, interface, enum, etc.' },
+    { type = 'action', id = 'new_project', label = 'Create New Maven Project', icon = '🏗️', desc = 'Generate project from archetype', color = 'DiagnosticInfo' },
+    { type = 'action', id = 'new_java_file', label = 'Create Java File', icon = '☕', desc = 'Class, interface, enum, etc.', color = 'DiagnosticWarn' },
   }
 
   if in_maven_project then
     table.insert(menu_items, { type = 'separator' })
     table.insert(menu_items,
-      { type = 'action', id = 'run_goal', label = 'Run Maven Goal', icon = '🎯', desc = 'Execute any Maven goal' })
+      { type = 'action', id = 'run_goal', label = 'Run Maven Goal', icon = '🎯', desc = 'Execute any Maven goal', color =
+      'DiagnosticOk' })
 
     table.insert(menu_items, { type = 'separator' })
     table.insert(menu_items, { type = 'header', label = '📦 Dependencies' })
     table.insert(menu_items,
-      { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📋', desc = 'Jackson 2.18.2' })
+      { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📋', desc = 'Jackson 2.18.2', color =
+      '@string' })
     table.insert(menu_items,
-      { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'LWJGL 3.3.6 + natives' })
+      { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'LWJGL 3.3.6 + natives', color =
+      '@function' })
 
     table.insert(menu_items, { type = 'separator' })
     table.insert(menu_items, { type = 'header', label = '🔧 Build Tools' })
     table.insert(menu_items,
       { type = 'action', id = 'set_java_version', label = 'Set Java Version', icon = '☕', desc =
-      'Configure compiler version' })
+      'Configure compiler version', color = '@variable' })
 
     if not has_assembly_plugin() then
       table.insert(menu_items,
-        { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Assembly Plugin' })
+        { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Assembly Plugin', color =
+        '@type' })
     end
 
     table.insert(menu_items,
-      { type = 'action', id = 'package', label = 'Package Project', icon = '📦', desc = 'Build regular JAR' })
+      { type = 'action', id = 'package', label = 'Package Project', icon = '📦', desc = 'Build regular JAR', color =
+      '@keyword' })
 
     if has_assembly_plugin() then
       table.insert(menu_items,
-        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎁', desc = 'JAR with dependencies' })
+        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎁', desc = 'JAR with dependencies', color =
+        '@constant' })
     end
 
     table.insert(menu_items,
-      { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🔄', desc = 'Clean and install' })
+      { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🔄', desc = 'Clean and install', color =
+      'DiagnosticHint' })
   end
 
   -- Render function
-  local function render()
+  local function render(current_idx)
     local lines = {}
     local highlights = {}
     local selectable = {}
     local action_map = {}
 
-    -- Header
+    -- Header with gradient effect
     table.insert(lines, '')
     table.insert(lines, '  ⚡ MARVIN - Maven for Neovim')
-    table.insert(highlights, { line = #lines - 1, hl_group = 'Title', col_start = 0, col_end = -1 })
+    table.insert(highlights, { line = #lines - 1, hl_group = '@constructor', col_start = 0, col_end = -1 })
 
     table.insert(lines, '')
 
@@ -122,24 +129,32 @@ function M.show()
     table.insert(lines, '')
 
     -- Menu items
-    local last_header = nil
+    local item_idx = 0
     for _, item in ipairs(menu_items) do
       if item.type == 'header' then
         table.insert(lines, '')
         table.insert(lines, '  ' .. item.label)
         table.insert(highlights, { line = #lines - 1, hl_group = '@keyword', col_start = 0, col_end = -1 })
-        last_header = item.label
       elseif item.type == 'separator' then
-        if last_header then
-          table.insert(lines, '')
-        end
+        -- Don't add extra lines
       elseif item.type == 'action' then
+        item_idx = item_idx + 1
+        local is_selected = item_idx == current_idx
         local line_num = #lines + 1
 
         table.insert(lines, '')
-        table.insert(lines, '    ' .. item.icon .. ' ' .. item.label)
+
+        -- Format with selection indicator
+        if is_selected then
+          table.insert(lines, '  ▶ ' .. item.icon .. '  ' .. item.label)
+          table.insert(highlights, { line = line_num, hl_group = 'Visual', col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num, hl_group = item.color, col_start = 6, col_end = -1 })
+        else
+          table.insert(lines, '    ' .. item.icon .. '  ' .. item.label)
+          table.insert(highlights, { line = line_num, hl_group = item.color, col_start = 0, col_end = -1 })
+        end
+
         table.insert(lines, '      ' .. item.desc)
-        table.insert(highlights, { line = line_num, hl_group = 'Normal', col_start = 0, col_end = -1 })
         table.insert(highlights, { line = line_num + 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
 
         table.insert(selectable, line_num)
@@ -153,68 +168,44 @@ function M.show()
     table.insert(highlights, { line = #lines - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
 
     table.insert(lines, '  ↑↓ j/k Navigate  │  Enter Select  │  q/Esc Cancel')
-    table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+    table.insert(highlights, { line = #lines - 1, hl_group = '@comment', col_start = 0, col_end = -1 })
     table.insert(lines, '')
 
     return lines, highlights, selectable, action_map
   end
 
-  local lines, highlights, selectable, action_map = render()
+  local current_idx = 1
+  local lines, highlights, selectable, action_map = render(current_idx)
   local buf, win = create_popup('⚡ Marvin Dashboard', 82, #lines)
 
-  -- Display content
-  vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
+  -- Update display function
+  local function update_display()
+    lines, highlights, selectable, action_map = render(current_idx)
 
-  -- Apply highlights
-  local ns = vim.api.nvim_create_namespace('marvin_dashboard')
-  for _, hl in ipairs(highlights) do
-    vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line, hl.col_start, hl.col_end)
-  end
-
-  -- Selection state
-  local current_idx = 1
-  local highlight_ns = vim.api.nvim_create_namespace('marvin_select')
-
-  local function update_highlight()
-    vim.api.nvim_buf_clear_namespace(buf, highlight_ns, 0, -1)
-    if #selectable > 0 and current_idx <= #selectable then
-      local line_num = selectable[current_idx]
-      -- Highlight the item and its description
-      vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'CursorLine', line_num - 1, 0, -1)
-      vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'CursorLine', line_num, 0, -1)
-
-      -- Add selection indicator
-      vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
-      local line_text = vim.api.nvim_buf_get_lines(buf, line_num - 1, line_num, false)[1]
-      if line_text and not line_text:match('^  ▶') then
-        local new_line = '  ▶ ' .. line_text:sub(5)
-        vim.api.nvim_buf_set_lines(buf, line_num - 1, line_num, false, { new_line })
-      end
-      vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
-
-      pcall(vim.api.nvim_win_set_cursor, win, { line_num, 0 })
-    end
-  end
-
-  local function clear_indicators()
     vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
-    local all_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    for i, line in ipairs(all_lines) do
-      if line:match('^  ▶') then
-        all_lines[i] = '  ' .. line:sub(5)
-      end
-    end
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, all_lines)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
+
+    -- Apply highlights
+    local ns = vim.api.nvim_create_namespace('marvin_dashboard')
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
+    for _, hl in ipairs(highlights) do
+      vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line, hl.col_start, hl.col_end)
+    end
+
+    -- Position cursor
+    if #selectable > 0 and current_idx <= #selectable then
+      pcall(vim.api.nvim_win_set_cursor, win, { selectable[current_idx], 0 })
+    end
   end
+
+  -- Initial display
+  update_display()
 
   -- Navigation
   local function move(direction)
     if #selectable == 0 then return end
-
-    clear_indicators()
 
     if direction == 'down' then
       current_idx = current_idx < #selectable and current_idx + 1 or 1
@@ -222,11 +213,8 @@ function M.show()
       current_idx = current_idx > 1 and current_idx - 1 or #selectable
     end
 
-    update_highlight()
+    update_display()
   end
-
-  -- Initial highlight
-  update_highlight()
 
   -- Selection handler
   local function select()
