@@ -57,24 +57,24 @@ function M.show()
   local in_maven_project = project.detect()
 
   local menu_items = {
-    { type = 'header', label = '🚀 Project Actions' },
-    { type = 'action', id = 'new_project', label = 'Create New Maven Project', icon = '📦', desc = 'Generate a new Maven project from archetype' },
+    { type = 'header', label = '󱁻 Project Actions' },
+    { type = 'action', id = 'new_project', label = ' Create New Maven Project', icon = '', desc = 'Generate a new Maven project from archetype' },
   }
 
   -- Add Maven-specific actions if in a Maven project
   if in_maven_project then
     table.insert(menu_items,
-      { type = 'action', id = 'run_goal', label = 'Run Maven Goal', icon = '▶️', desc = 'Execute any Maven goal' })
+      { type = 'action', id = 'run_goal', label = ' Run Maven Goal', icon = '', desc = 'Execute any Maven goal' })
 
     table.insert(menu_items, { type = 'separator' })
 
-    table.insert(menu_items, { type = 'header', label = '📚 Add Dependencies' })
+    table.insert(menu_items, { type = 'header', label = '󱑤 Add Dependencies' })
     table.insert(menu_items,
       {
         type = 'action',
         id = 'add_jackson',
-        label = 'Add Jackson JSON',
-        icon = '📄',
+        label = ' Add Jackson JSON',
+        icon = '',
         desc =
         'Add Jackson JSON library (2.18.2)'
       })
@@ -82,8 +82,8 @@ function M.show()
       {
         type = 'action',
         id = 'add_lwjgl',
-        label = 'Add LWJGL',
-        icon = '🎮',
+        label = '󰊖 Add LWJGL',
+        icon = '',
         desc =
         'Add LWJGL 3.3.6 with platform natives'
       })
@@ -97,9 +97,9 @@ function M.show()
         type = 'action',
         id = 'set_java_version',
         label = 'Set Java Version',
-        icon = '☕',
+        icon = '',
         desc =
-        'Configure Java compiler source/target version'
+        'Configure Java compiler version'
       })
 
     -- Check if assembly plugin is already configured
@@ -110,25 +110,37 @@ function M.show()
         {
           type = 'action',
           id = 'add_assembly',
-          label = 'Setup Fat JAR Build',
-          icon = '⚙️',
+          label = '󰬷 Setup Fat JAR Build',
+          icon = '',
           desc =
-          'Add Maven Assembly Plugin configuration'
+          'Add Maven Assembly Plugin'
         })
     end
 
     table.insert(menu_items,
-      { type = 'action', id = 'package', label = 'Package Project (Regular JAR)', icon = '📦', desc =
-      'Build regular JAR with mvn package' })
+      {
+        type = 'action',
+        id = 'package',
+        label = ' Package Project (Regular JAR)',
+        icon = '',
+        desc =
+        'Build regular JAR with mvn package'
+      })
 
     if has_assembly then
       table.insert(menu_items,
-        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎯', desc =
-        'Build executable JAR with all dependencies' })
+        {
+          type = 'action',
+          id = 'package_fat',
+          label = ' Build Fat JAR',
+          icon = '',
+          desc =
+          'Build executable JAR with dependencies'
+        })
     end
 
     table.insert(menu_items,
-      { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🧹', desc = 'Run mvn clean install' })
+      { type = 'action', id = 'clean_install', label = ' Clean Install', icon = '', desc = 'Run mvn clean install' })
   end
 
   local lines = {}
@@ -136,7 +148,7 @@ function M.show()
   local action_map = {}
 
   table.insert(lines, '')
-  table.insert(lines, '  ⚡ MARVIN - Maven for Neovim')
+  table.insert(lines, '  MARVIN - Maven for Neovim')
   table.insert(lines, '')
 
   if in_maven_project then
@@ -146,7 +158,7 @@ function M.show()
         string.format('  Project: %s:%s', proj_info.info.group_id or 'unknown', proj_info.info.artifact_id or 'unknown'))
     end
   else
-    table.insert(lines, '  📁 Not in a Maven project - Create a new one!')
+    table.insert(lines, '   Not in a Maven project - Create a new one!')
   end
 
   table.insert(lines, '')
@@ -163,8 +175,8 @@ function M.show()
     elseif item.type == 'action' then
       local line_num = #lines + 1
       table.insert(lines, '')
-      table.insert(lines, '    ' .. item.icon .. '  ' .. item.label)
-      table.insert(lines, '       ' .. item.desc)
+      table.insert(lines, '    ' .. item.icon .. ' ' .. item.label)
+      table.insert(lines, '      ' .. item.desc)
       table.insert(selectable, line_num + 1)
       action_map[line_num + 1] = item.id
     end
@@ -173,10 +185,10 @@ function M.show()
   table.insert(lines, '')
   table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
   table.insert(lines, '')
-  table.insert(lines, '  ⌨  Navigation: ↑/↓ or j/k  │  ⏎ Select  │  q Cancel')
+  table.insert(lines, '  ↑/↓ j/k Navigate  │  Enter Select  │  q/Esc Cancel')
   table.insert(lines, '')
 
-  local buf, win = create_popup('⚡ Marvin Dashboard', 76, #lines)
+  local buf, win = create_popup(' Marvin Dashboard', 76, #lines)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
@@ -185,7 +197,7 @@ function M.show()
   -- Highlighting
   local ns = vim.api.nvim_create_namespace('marvin_dashboard')
   for i, line in ipairs(lines) do
-    if line:match('⚡ MARVIN') then
+    if line:match(' MARVIN') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
     elseif line:match('Project:') or line:match('📁') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'String', i - 1, 0, -1)
@@ -193,11 +205,11 @@ function M.show()
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
     elseif line:match('═') or line:match('─') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
-    elseif line:match('[📦▶️📄🎮🧹⚙️🎯]') then
+    elseif line:match('[]') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Special', i - 1, 0, -1)
-    elseif line:match('       ') then
+    elseif line:match('^%s+[A-Z]') and not line:match('MARVIN') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-    elseif line:match('⌨') then
+    elseif line:match('↑/↓') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
     end
   end
