@@ -156,6 +156,7 @@ function M.get_common_goals()
     { goal = 'verify', label = 'Verify', icon = '✅' },
     { goal = 'clean install', label = 'Clean + Install', icon = '🔄' },
     { goal = 'dependency:tree', label = 'Dependency Tree', icon = '🌳' },
+    { goal = 'dependency:resolve', label = 'Resolve Dependencies', icon = '📥' },
     { goal = 'help:effective-pom', label = 'Effective POM', icon = '📄' },
     { goal = nil, label = 'Custom Goal...', icon = '⚙️', needs_options = true },
   }
