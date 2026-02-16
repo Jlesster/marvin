@@ -22,7 +22,7 @@ M.defaults = {
   },
 
   archetypes = {
-    'maven-archetype-quickstart'
+    'maven-archetype-quickstart',
     'maven-archetype-my-custom-archetype',
     'maven-archetype-simple',
   },

@@ -55,6 +55,17 @@ function M.parse_pom(pom_path)
   }
 end
 
+-- FIXED: Added missing read_file function
+function M.read_file(path)
+  local file = io.open(path, 'r')
+  if not file then
+    return nil
+  end
+  local content = file:read('*all')
+  file:close()
+  return content
+end
+
 function M.extract_xml_tag(content, tag)
   local pattern = '<' .. tag .. '>(.-)</' .. tag .. '>'
   local match = content:match(pattern)
@@ -74,8 +85,9 @@ function M.extract_profiles(content)
   return profiles
 end
 
-function M.is_maven_avaliable()
-  local maven_cmd = require('maven').config.maven_command
+function M.is_maven_available()
+  local config = require('marvin.config')
+  local maven_cmd = config.defaults.maven_command
   local handle = io.popen(maven_cmd .. ' --version 2>&1')
 
   if not handle then
@@ -89,7 +101,7 @@ function M.is_maven_avaliable()
 end
 
 function M.validate_environment()
-  if not M.is_maven_avaliable() then
+  if not M.is_maven_available() then
     vim.notify('Maven is not installed', vim.log.levels.ERROR)
     return false
   end

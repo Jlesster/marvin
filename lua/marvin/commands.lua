@@ -29,7 +29,7 @@ function M.register()
 
   -- Project generation
   vim.api.nvim_create_user_command('MavenNew', function()
-    local generator = require('maven.generator')
+    local generator = require('marvin.generator')
     generator.create_project()
   end, { desc = 'Create new Maven project' })
 end
@@ -40,14 +40,14 @@ function M.interactive_menu()
 end
 
 function M.execute_goal(goal)
-  local executor = require(marvin.executor)
+  local executor = require('marvin.executor') -- FIXED: Added quotes
   executor.run(goal)
 end
 
 function M.complete_goals(arg_lead, cmd_line, cursor_pos)
   return {
     'clean',
-    'complile',
+    'compile', -- FIXED: Was 'complile'
     'test',
     'test-compile',
     'package',

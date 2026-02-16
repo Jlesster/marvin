@@ -51,7 +51,7 @@ function M.select_snacks(items, opts, callback)
 
   snacks.picker.pick({
     items = items,
-    prompt = opts.prompt or 'Select:'
+    prompt = opts.prompt or 'Select:',
     format = opts.format_item or function(item)
       if type(item) == 'table' then
         return item.label or item.name or tostring(item)
@@ -70,7 +70,7 @@ function M.select_builtin(items, opts, callback)
     if type(item) == 'table' then
       label = item.label or item.name or tostring(item)
     end
-    table.insert(choices, string.format('5d. %s', i, label))
+    table.insert(choices, string.format('%d. %s', i, label))
   end
 
   local choice = vim.fn.inputlist(choices)
@@ -85,7 +85,8 @@ end
 function M.input(opts, callback)
   opts = opts or {}
 
-  if M.backedn == 'snacks' or M.backend == 'dressing' then
+  -- FIXED: Was 'backedn'
+  if M.backend == 'snacks' or M.backend == 'dressing' then
     vim.ui.input({
       prompt = opts.prompt or 'Input:',
       default = opts.default or '',
@@ -107,8 +108,9 @@ function M.notify(message, level, opts)
       title = opts.title or 'Marvin',
     })
   else
-    vim.notify(message, level {
-      title = opts.title or 'Maven',
+    -- FIXED: Missing comma after level
+    vim.notify(message, level, {
+      title = opts.title or 'Marvin',
     })
   end
 end
@@ -130,9 +132,10 @@ function M.show_goal_menu()
   local goals = M.get_common_goals()
 
   M.select(goals, {
-    prompt = '󱃾 Maven Goal:',
+    prompt = 'Maven Goal:',
     format_item = function(goal)
-      return string.format('%s %s', goal.icon, foal.label)
+      -- FIXED: Was 'foal.label'
+      return string.format('%s %s', goal.icon, goal.label)
     end,
   }, function(choice)
     if not choice then return end
@@ -148,19 +151,96 @@ function M.show_goal_menu()
 end
 
 function M.get_common_goals()
+  -- FIXED: Proper icons
   return {
-    { goal = 'clean', label = 'Clean', icon = '󰃨 ' },
+    { goal = 'clean', label = 'Clean', icon = '󰃨' },
     { goal = 'compile', label = 'Compile', icon = '' },
     { goal = 'test', label = 'Test', icon = '󰙨' },
-    { goal = 'test -DskipTests', label = 'Test (skip)', icon = '󰒲 ' },
-    { goal = 'package', label = 'Package', icon = '󰏗 ' },
-    { goal = 'install', label = 'Install', icon = '󰏔 ' },
-    { goal = 'verify', label = 'Verify', icon = '󰄬 ' },
-    { goal = 'clean install', label = 'Clean + Install', icon = '󰚰 ' },
-    { goal = 'dependency:tree', label = 'Dependency Tree', icon = '󰐅 ' },
+    { goal = 'test -DskipTests', label = 'Test (skip)', icon = '󰒲' },
+    { goal = 'package', label = 'Package', icon = '󰏗' },
+    { goal = 'install', label = 'Install', icon = '󰏔' },
+    { goal = 'verify', label = 'Verify', icon = '󰄬' },
+    { goal = 'clean install', label = 'Clean + Install', icon = '󰚰' },
+    { goal = 'dependency:tree', label = 'Dependency Tree', icon = '󰐅' },
     { goal = 'help:effective-pom', label = 'Effective POM', icon = '' },
-    { goal = nil, label = 'Custom Goal...', icon = '󰘳 ', needs_options = true },
+    { goal = nil, label = 'Custom Goal...', icon = '󰘳', needs_options = true },
   }
+end
+
+function M.show_profile_menu(goal)
+  local project = require('marvin.project').get_project()
+
+  if not project or not project.info or #project.info.profiles == 0 then
+    vim.notify('No profiles found in pom.xml', vim.log.levels.WARN)
+    local executor = require('marvin.executor')
+    executor.run(goal)
+    return
+  end
+
+  local profiles = {}
+  table.insert(profiles, { id = nil, label = '(default)' })
+
+  for _, profile_id in ipairs(project.info.profiles) do
+    table.insert(profiles, { id = profile_id, label = profile_id })
+  end
+
+  M.select(profiles, {
+    prompt = '📋 Select Profile:',
+  }, function(choice)
+    if not choice then return end
+
+    local executor = require('marvin.executor')
+    executor.run(goal, { profile = choice.id })
+  end)
+end
+
+function M.show_options_menu(goal)
+  local ui = require('marvin.ui')
+
+  ui.input({
+    prompt = 'Maven goal(s): ',
+    default = '',
+  }, function(custom_goal)
+    if not custom_goal or custom_goal == '' then
+      return
+    end
+
+    -- Ask for additional options
+    ui.input({
+      prompt = 'Additional options (optional): ',
+      default = '',
+    }, function(extra_opts)
+      local executor = require('marvin.executor')
+
+      local full_goal = custom_goal
+      if extra_opts and extra_opts ~= '' then
+        full_goal = full_goal .. ' ' .. extra_opts
+      end
+
+      executor.run(full_goal)
+    end)
+  end)
+end
+
+function M.show_advanced_menu()
+  local options = {
+    { goal = 'clean install -DskipTests=true',       label = 'Clean Install (skip tests)' },
+    { goal = 'clean install -U',                     label = 'Clean Install (force update)' },
+    { goal = 'clean package -Dmaven.test.skip=true', label = 'Package (skip tests)' },
+    { goal = 'dependency:tree -Dverbose',            label = 'Verbose Dependency Tree' },
+    { goal = 'dependency:analyze',                   label = 'Analyze Dependencies' },
+    { goal = 'versions:display-dependency-updates',  label = 'Check for Updates' },
+    { goal = 'help:effective-settings',              label = 'Show Effective Settings' },
+  }
+
+  M.select(options, {
+    prompt = 'Advanced Options:',
+  }, function(choice)
+    if not choice then return end
+
+    local executor = require('marvin.executor')
+    executor.run(choice.goal)
+  end)
 end
 
 return M

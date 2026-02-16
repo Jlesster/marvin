@@ -1,0 +1,286 @@
+*marvin.txt*  Maven plugin for Neovim
+
+                    MARVIN - MAVEN FOR NEOVIM
+                    
+                    Run Maven goals without leaving Vim!
+
+==============================================================================
+CONTENTS                                                      *marvin-contents*
+
+    1. Introduction ............................ |marvin-introduction|
+    2. Requirements ............................ |marvin-requirements|
+    3. Installation ............................ |marvin-installation|
+    4. Quick Start ............................. |marvin-quickstart|
+    5. Commands ................................ |marvin-commands|
+    6. Configuration ........................... |marvin-configuration|
+    7. Usage ................................... |marvin-usage|
+    8. Keymaps ................................. |marvin-keymaps|
+    9. FAQ ..................................... |marvin-faq|
+   10. About ................................... |marvin-about|
+
+==============================================================================
+1. INTRODUCTION                                           *marvin-introduction*
+
+Marvin is a Neovim plugin that provides seamless integration with Apache 
+Maven. It allows you to run Maven goals, create new projects, and view build 
+output without leaving your editor.
+
+Features:
+  • Interactive goal menu
+  • Project generation from archetypes
+  • Build output parsing to quickfix
+  • Profile selection
+  • Multiple UI backends (snacks.nvim, dressing.nvim, builtin)
+  • Terminal or background execution
+
+==============================================================================
+2. REQUIREMENTS                                           *marvin-requirements*
+
+Required:
+  • Neovim 0.9.0 or later
+  • Apache Maven installed and in PATH
+
+Optional (for enhanced UI):
+  • snacks.nvim
+  • dressing.nvim
+
+==============================================================================
+3. INSTALLATION                                           *marvin-installation*
+
+Using lazy.nvim: >lua
+    {
+      'yourusername/marvin.nvim',
+      config = function()
+        require('marvin').setup({
+          -- your config here
+        })
+      end,
+    }
+<
+
+Using packer.nvim: >lua
+    use {
+      'yourusername/marvin.nvim',
+      config = function()
+        require('marvin').setup()
+      end
+    }
+<
+
+==============================================================================
+4. QUICK START                                             *marvin-quickstart*
+
+1. Open a file in a Maven project (directory containing pom.xml)
+2. Run `:Maven` to open the goal menu
+3. Select a goal (e.g., "Clean", "Test", "Package")
+4. Watch Maven execute in a terminal or background
+
+Common workflows:
+  • `:Maven` - Interactive menu
+  • `:MavenClean` - Run mvn clean
+  • `:MavenTest` - Run mvn test
+  • `:MavenPackage` - Run mvn package
+  • `:MavenNew` - Create new Maven project
+
+==============================================================================
+5. COMMANDS                                                   *marvin-commands*
+
+                                                                        *:Maven*
+:Maven                  Open interactive Maven goal menu
+
+                                                                    *:MavenExec*
+:MavenExec {goal}       Execute a specific Maven goal
+                        Example: >
+                        :MavenExec clean install
+<
+                                                                   *:MavenClean*
+:MavenClean             Run `mvn clean`
+
+                                                                    *:MavenTest*
+:MavenTest              Run `mvn test`
+
+                                                                 *:MavenPackage*
+:MavenPackage           Run `mvn package`
+
+                                                                     *:MavenNew*
+:MavenNew               Create a new Maven project from archetype
+
+                                                                    *:MavenStop*
+:MavenStop              Stop the currently running Maven build
+
+==============================================================================
+6. CONFIGURATION                                         *marvin-configuration*
+
+Default configuration: >lua
+    require('marvin').setup({
+      maven_command = 'mvn',        -- Maven executable
+      ui_backend = 'auto',          -- 'auto', 'snacks', 'dressing', 'builtin'
+      
+      terminal = {
+        position = 'float',         -- 'float', 'split', 'vsplit', 'background'
+        size = 0.4,                 -- Height/width ratio
+        close_on_success = false,   -- Auto-close on successful build
+      },
+      
+      quickfix = {
+        auto_open = true,           -- Auto-open quickfix for errors
+        height = 10,                -- Quickfix window height
+      },
+      
+      keymaps = {
+        run_goal = '<leader>Mg',
+        clean = '<leader>Mc',
+        test = '<leader>Mt',
+        package = '<leader>Mp',
+        install = '<leader>Mi',
+      },
+      
+      archetypes = {
+        'maven-archetype-quickstart',
+        'maven-archetype-webapp',
+        'maven-archetype-simple',
+      },
+    })
+<
+
+Configuration options:                          *marvin-config-maven_command*
+maven_command           Maven executable to use. Can be 'mvn' or 'mvnw' 
+                        for Maven wrapper.
+
+                                                *marvin-config-ui_backend*
+ui_backend              UI backend for menus and prompts:
+                        • 'auto' - Auto-detect (snacks > dressing > builtin)
+                        • 'snacks' - Use snacks.nvim
+                        • 'dressing' - Use dressing.nvim
+                        • 'builtin' - Use Vim's builtin UI
+
+                                                *marvin-config-terminal*
+terminal                Terminal execution settings:
+                        • position - Where to show terminal
+                        • size - Height/width ratio (0-1)
+                        • close_on_success - Auto-close on success
+
+                                                *marvin-config-quickfix*
+quickfix                Quickfix integration for build errors:
+                        • auto_open - Automatically open quickfix
+                        • height - Quickfix window height
+
+                                                *marvin-config-keymaps*
+keymaps                 Default keymaps for common goals
+
+                                                *marvin-config-archetypes*
+archetypes              List of archetypes to show in project creation menu
+
+==============================================================================
+7. USAGE                                                         *marvin-usage*
+
+BASIC USAGE ~
+
+Open the interactive menu: >
+    :Maven
+<
+This shows a list of common Maven goals. Select one to execute.
+
+Execute a specific goal: >
+    :MavenExec clean install
+<
+
+PROFILES ~
+
+If your pom.xml contains profiles, Marvin will detect them and prompt you
+to select one when running goals.
+
+CUSTOM GOALS ~
+
+Select "Custom Goal..." from the menu to enter arbitrary Maven commands: >
+    clean install -DskipTests=true -U
+<
+
+PROJECT GENERATION ~
+
+Create a new Maven project: >
+    :MavenNew
+<
+This will guide you through:
+1. Selecting an archetype
+2. Entering groupId, artifactId, version
+3. Choosing a directory
+4. Generating the project
+
+QUICKFIX INTEGRATION ~
+
+When a build fails, compilation errors are automatically parsed and added
+to the quickfix list. Navigate with:
+  • :cnext - Next error
+  • :cprev - Previous error
+  • :copen - Open quickfix window
+  • :cclose - Close quickfix window
+
+==============================================================================
+8. KEYMAPS                                                     *marvin-keymaps*
+
+Default keymaps (configurable):
+
+    <leader>Mg          Open Maven goal menu
+    <leader>Mc          Run mvn clean
+    <leader>Mt          Run mvn test
+    <leader>Mp          Run mvn package
+    <leader>Mi          Run mvn install
+
+To disable default keymaps, set: >lua
+    require('marvin').setup({
+      keymaps = {},  -- Empty table disables keymaps
+    })
+<
+
+Then create your own: >lua
+    vim.keymap.set('n', '<leader>mm', ':Maven<CR>')
+    vim.keymap.set('n', '<leader>mc', ':MavenClean<CR>')
+<
+
+==============================================================================
+9. FAQ                                                             *marvin-faq*
+
+Q: Maven is installed but Marvin says it's not found.
+A: Check that `mvn --version` works in your terminal. If you're using a 
+   Maven wrapper, set `maven_command = 'mvnw'` in configuration.
+
+Q: Build output doesn't show in terminal.
+A: Make sure `terminal.position` is not set to 'background'. Try 'float' 
+   or 'split'.
+
+Q: Errors aren't showing in quickfix.
+A: Ensure `quickfix.auto_open = true` and that your build actually failed.
+   Error parsing currently supports Java compilation errors and test failures.
+
+Q: How do I add more archetypes to the project creation menu?
+A: Add them to the `archetypes` config: >lua
+    require('marvin').setup({
+      archetypes = {
+        'maven-archetype-quickstart',
+        'your-custom-archetype',
+      },
+    })
+<
+
+Q: Can I use this with Gradle?
+A: No, Marvin is specifically for Maven. For Gradle, consider using a 
+   different plugin.
+
+==============================================================================
+10. ABOUT                                                        *marvin-about*
+
+Marvin is a Maven plugin for Neovim, designed to make Java development 
+more efficient without leaving your editor.
+
+Project: https://github.com/yourusername/marvin.nvim
+License: MIT
+Author: Your Name
+
+Contribute:
+  • Report bugs: GitHub issues
+  • Submit PRs: GitHub pull requests
+  • Star the repo if you find it useful!
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
