@@ -47,40 +47,17 @@ function M.select_dressing(items, opts, callback)
 end
 
 function M.select_snacks(items, opts, callback)
-  local snacks = require('snacks')
-
-  -- Transform items into snacks picker format
-  local picker_items = {}
-  for i, item in ipairs(items) do
-    local text
-    if type(item) == 'table' then
-      text = item.label or item.name or tostring(item)
-      if opts.format_item then
-        text = opts.format_item(item)
-      end
-    else
-      text = tostring(item)
-    end
-
-    table.insert(picker_items, {
-      text = text,
-      item = item,
-      idx = i,
-    })
-  end
-
-  snacks.picker.pick({
-    items = picker_items,
+  -- Snacks picker can be finicky - fall back to vim.ui.select
+  -- which dressing.nvim will enhance if available
+  vim.ui.select(items, {
     prompt = opts.prompt or 'Select:',
-    format = function(picker_item)
-      return picker_item.text
-    end,
-    confirm = function(picker_item)
-      if callback and picker_item then
-        callback(picker_item.item)
+    format_item = opts.format_item or function(item)
+      if type(item) == 'table' then
+        return item.label or item.name or tostring(item)
       end
+      return tostring(item)
     end,
-  })
+  }, callback)
 end
 
 function M.select_builtin(items, opts, callback)
