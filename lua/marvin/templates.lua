@@ -1,32 +1,3 @@
-local M = {}
-
--- Get current package from file path
-local function get_package_from_path()
-  local current_file = vim.api.nvim_buf_get_name(0)
-  local src_pattern = "src/main/java/"
-  local test_pattern = "src/test/java/"
-
-  local package_path = current_file:match(src_pattern .. "(.+)/[^/]+%.java$")
-  if not package_path then
-    package_path = current_file:match(test_pattern .. "(.+)/[^/]+%.java$")
-  end
-
-  if package_path then
-    return package_path:gsub("/", ".")
-  end
-
-  return nil
-end
-
--- Get project info for default package
-local function get_default_package()
-  local project = require('marvin.project').get_project()
-  if project and project.info then
-    return project.info.group_id or "com.example"
-  end
-  return "com.example"
-end
-
 -- Class template
 function M.class_template(name, package, options)
   options = options or {}
@@ -44,8 +15,17 @@ function M.class_template(name, package, options)
     table.insert(lines, "")
   end
 
-  local javadoc = options.javadoc or true
-  if javadoc then
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  -- Only add javadoc if enabled in config (unless explicitly overridden in options)
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
     table.insert(lines, "/**")
     table.insert(lines, " * " .. (options.description or name))
     table.insert(lines, " */")
@@ -91,7 +71,16 @@ function M.interface_template(name, package, options)
     table.insert(lines, "")
   end
 
-  if options.javadoc ~= false then
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
     table.insert(lines, "/**")
     table.insert(lines, " * " .. (options.description or name))
     table.insert(lines, " */")
@@ -120,7 +109,16 @@ function M.enum_template(name, package, options)
     table.insert(lines, "")
   end
 
-  if options.javadoc ~= false then
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
     table.insert(lines, "/**")
     table.insert(lines, " * " .. (options.description or name))
     table.insert(lines, " */")
@@ -156,7 +154,16 @@ function M.record_template(name, package, options)
     table.insert(lines, "")
   end
 
-  if options.javadoc ~= false then
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
     table.insert(lines, "/**")
     table.insert(lines, " * " .. (options.description or name))
     table.insert(lines, " */")
@@ -178,13 +185,6 @@ function M.record_template(name, package, options)
   return lines
 end
 
--- Abstract class template
-function M.abstract_class_template(name, package, options)
-  options = options or {}
-  options.modifier = "public abstract"
-  return M.class_template(name, package, options)
-end
-
 -- Exception template
 function M.exception_template(name, package, options)
   options = options or {}
@@ -198,7 +198,16 @@ function M.exception_template(name, package, options)
     table.insert(lines, "")
   end
 
-  if options.javadoc ~= false then
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
     table.insert(lines, "/**")
     table.insert(lines, " * " .. (options.description or name))
     table.insert(lines, " */")
@@ -222,54 +231,6 @@ function M.exception_template(name, package, options)
   return lines
 end
 
--- JUnit test template
-function M.test_template(name, package, options)
-  options = options or {}
-  local lines = {}
-
-  if package and package ~= "" then
-    table.insert(lines, "package " .. package .. ";")
-    table.insert(lines, "")
-  end
-
-  table.insert(lines, "import org.junit.jupiter.api.Test;")
-  table.insert(lines, "import org.junit.jupiter.api.BeforeEach;")
-  table.insert(lines, "import org.junit.jupiter.api.AfterEach;")
-  table.insert(lines, "import static org.junit.jupiter.api.Assertions.*;")
-  table.insert(lines, "")
-
-  if options.imports then
-    for _, import in ipairs(options.imports) do
-      table.insert(lines, "import " .. import .. ";")
-    end
-    table.insert(lines, "")
-  end
-
-  table.insert(lines, "/**")
-  table.insert(lines, " * Tests for " .. (options.class_under_test or "class"))
-  table.insert(lines, " */")
-  table.insert(lines, "public class " .. name .. " {")
-  table.insert(lines, "")
-  table.insert(lines, "  @BeforeEach")
-  table.insert(lines, "  public void setUp() {")
-  table.insert(lines, "    // Setup test fixtures")
-  table.insert(lines, "  }")
-  table.insert(lines, "")
-  table.insert(lines, "  @AfterEach")
-  table.insert(lines, "  public void tearDown() {")
-  table.insert(lines, "    // Cleanup")
-  table.insert(lines, "  }")
-  table.insert(lines, "")
-  table.insert(lines, "  @Test")
-  table.insert(lines, "  public void testExample() {")
-  table.insert(lines, "    // TODO: Implement test")
-  table.insert(lines, "    fail(\"Not yet implemented\");")
-  table.insert(lines, "  }")
-  table.insert(lines, "}")
-
-  return lines
-end
-
 -- Builder pattern template
 function M.builder_template(name, package, options)
   options = options or {}
@@ -285,9 +246,21 @@ function M.builder_template(name, package, options)
     { type = "int",    name = "value", required = false }
   }
 
-  table.insert(lines, "/**")
-  table.insert(lines, " * " .. (options.description or name))
-  table.insert(lines, " */")
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
+    table.insert(lines, "/**")
+    table.insert(lines, " * " .. (options.description or name))
+    table.insert(lines, " */")
+  end
+
   table.insert(lines, "public class " .. name .. " {")
   table.insert(lines, "")
 
@@ -346,8 +319,3 @@ function M.builder_template(name, package, options)
 
   return lines
 end
-
-M.get_package_from_path = get_package_from_path
-M.get_default_package = get_default_package
-
-return M

@@ -25,8 +25,12 @@ M.defaults = {
 
   archetypes = {
     'maven-archetype-quickstart',
+    'jless-schema-archetype',
     'maven-archetype-webapp',
     'maven-archetype-simple',
+  },
+  java = {
+    enable_javadoc = false, -- Set to true to enable Javadoc comments
   },
 }
 
