@@ -49,16 +49,37 @@ end
 function M.select_snacks(items, opts, callback)
   local snacks = require('snacks')
 
-  snacks.picker.pick({
-    items = items,
-    prompt = opts.prompt or 'Select:',
-    format = opts.format_item or function(item)
-      if type(item) == 'table' then
-        return item.label or item.name or tostring(item)
+  -- Transform items into snacks picker format
+  local picker_items = {}
+  for i, item in ipairs(items) do
+    local text
+    if type(item) == 'table' then
+      text = item.label or item.name or tostring(item)
+      if opts.format_item then
+        text = opts.format_item(item)
       end
-      return tostring(item)
+    else
+      text = tostring(item)
+    end
+
+    table.insert(picker_items, {
+      text = text,
+      item = item,
+      idx = i,
+    })
+  end
+
+  snacks.picker.pick({
+    items = picker_items,
+    prompt = opts.prompt or 'Select:',
+    format = function(picker_item)
+      return picker_item.text
     end,
-    on_select = callback,
+    confirm = function(picker_item)
+      if callback and picker_item then
+        callback(picker_item.item)
+      end
+    end,
   })
 end
 
@@ -85,7 +106,6 @@ end
 function M.input(opts, callback)
   opts = opts or {}
 
-  -- FIXED: Was 'backedn'
   if M.backend == 'snacks' or M.backend == 'dressing' then
     vim.ui.input({
       prompt = opts.prompt or 'Input:',
@@ -108,7 +128,6 @@ function M.notify(message, level, opts)
       title = opts.title or 'Marvin',
     })
   else
-    -- FIXED: Missing comma after level
     vim.notify(message, level, {
       title = opts.title or 'Marvin',
     })
@@ -134,7 +153,6 @@ function M.show_goal_menu()
   M.select(goals, {
     prompt = 'Maven Goal:',
     format_item = function(goal)
-      -- FIXED: Was 'foal.label'
       return string.format('%s %s', goal.icon, goal.label)
     end,
   }, function(choice)
@@ -151,19 +169,18 @@ function M.show_goal_menu()
 end
 
 function M.get_common_goals()
-  -- FIXED: Proper icons
   return {
-    { goal = 'clean', label = 'Clean', icon = '󰃨' },
-    { goal = 'compile', label = 'Compile', icon = '' },
-    { goal = 'test', label = 'Test', icon = '󰙨' },
-    { goal = 'test -DskipTests', label = 'Test (skip)', icon = '󰒲' },
-    { goal = 'package', label = 'Package', icon = '󰏗' },
-    { goal = 'install', label = 'Install', icon = '󰏔' },
-    { goal = 'verify', label = 'Verify', icon = '󰄬' },
-    { goal = 'clean install', label = 'Clean + Install', icon = '󰚰' },
-    { goal = 'dependency:tree', label = 'Dependency Tree', icon = '󰐅' },
-    { goal = 'help:effective-pom', label = 'Effective POM', icon = '' },
-    { goal = nil, label = 'Custom Goal...', icon = '󰘳', needs_options = true },
+    { goal = 'clean', label = 'Clean', icon = '🧹' },
+    { goal = 'compile', label = 'Compile', icon = '🔨' },
+    { goal = 'test', label = 'Test', icon = '🧪' },
+    { goal = 'test -DskipTests', label = 'Test (skip)', icon = '⏭️' },
+    { goal = 'package', label = 'Package', icon = '📦' },
+    { goal = 'install', label = 'Install', icon = '💾' },
+    { goal = 'verify', label = 'Verify', icon = '✅' },
+    { goal = 'clean install', label = 'Clean + Install', icon = '🔄' },
+    { goal = 'dependency:tree', label = 'Dependency Tree', icon = '🌳' },
+    { goal = 'help:effective-pom', label = 'Effective POM', icon = '📄' },
+    { goal = nil, label = 'Custom Goal...', icon = '⚙️', needs_options = true },
   }
 end
 
