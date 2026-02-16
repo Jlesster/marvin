@@ -1,6 +1,6 @@
 local M = {}
 
--- Scan for packages in project (filtered and smart)
+-- Scan for packages in project (improved filtering)
 local function scan_packages()
   local project = require('marvin.project').get_project()
 
@@ -16,8 +16,8 @@ local function scan_packages()
 
   for _, src_path in ipairs(src_paths) do
     if vim.fn.isdirectory(src_path) == 1 then
-      -- Use find but exclude hidden directories
-      local cmd = string.format('find "%s" -type d 2>/dev/null | grep -v "/\\."', src_path)
+      -- Use find to get all directories
+      local cmd = string.format('find "%s" -type d 2>/dev/null', src_path)
       local handle = io.popen(cmd)
 
       if handle then
@@ -27,21 +27,19 @@ local function scan_packages()
             -- Convert path to package name
             local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
 
-            -- Filter out problematic packages
+            -- Filter criteria (relaxed)
             if package ~= '' and not packages[package] then
-              -- Skip packages with dots at start or that look like hidden dirs
-              local has_hidden = package:match('^%.') or package:match('%/%.') or dir:match('%/%.')
+              -- Skip hidden directories (starting with . or containing /.)
+              local has_hidden = package:match('^%.') or dir:match('%/%.')
 
-              -- Skip packages that are too deep (more than 5 levels)
+              -- Allow deeper nesting (up to 10 levels instead of 5)
               local depth = select(2, package:gsub('%.', '.'))
 
-              -- Must be valid Java package (lowercase start, valid chars)
-              local is_valid = package:match('^[a-z][a-z0-9_]*') and not package:match('[A-Z]')
+              -- Check if directory contains Java files OR subdirectories with Java files
+              local has_java = vim.fn.glob(dir .. '/*.java') ~= '' or
+                  vim.fn.glob(dir .. '/**/*.java') ~= ''
 
-              -- Check if directory contains actual Java files
-              local has_java_files = vim.fn.glob(dir .. '/*.java') ~= ''
-
-              if not has_hidden and depth <= 5 and is_valid and has_java_files then
+              if not has_hidden and depth <= 10 and has_java then
                 packages[package] = true
               end
             end
@@ -52,13 +50,13 @@ local function scan_packages()
     end
   end
 
-  -- Convert to array and sort intelligently
+  -- Convert to array and sort
   local package_list = {}
   for pkg, _ in pairs(packages) do
     table.insert(package_list, pkg)
   end
 
-  -- Sort packages: shorter (parent) packages first, then alphabetically
+  -- Sort: parent packages first, then alphabetically
   table.sort(package_list, function(a, b)
     local a_depth = select(2, a:gsub('%.', '.'))
     local b_depth = select(2, b:gsub('%.', '.'))
@@ -69,19 +67,10 @@ local function scan_packages()
     return a_depth < b_depth
   end)
 
-  -- Limit to top 10 most relevant packages if too many
-  if #package_list > 10 then
-    local limited = {}
-    for i = 1, 10 do
-      table.insert(limited, package_list[i])
-    end
-    return limited
-  end
-
   return package_list
 end
 
--- Create package selector with modern UI
+-- Create package selector with modern UI (FIXED)
 function M.select_package(callback)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
@@ -90,41 +79,37 @@ function M.select_package(callback)
   local current_package = templates.get_package_from_path()
   local default_package = current_package or templates.get_default_package()
 
-  -- Build package items with better organization
+  -- Build package items (compact - no descriptions)
   local package_items = {}
 
   -- Add current/default at top
   table.insert(package_items, {
     value = default_package,
-    label = default_package,
-    desc = 'Current/default package',
-    icon = '📍'
+    label = '📁 ' .. default_package .. ' (default)',
+    icon = nil -- Icon in label already
   })
 
   -- Add new package option
   table.insert(package_items, {
     value = 'new',
-    label = 'Create New Package',
-    desc = 'Enter a new package name',
-    icon = '✨'
+    label = '✨ Create New Package',
+    icon = nil
   })
 
-  -- Add existing packages if any (compact list)
+  -- Add existing packages (no icons, no descriptions for compactness)
   if #packages > 0 then
     for _, pkg in ipairs(packages) do
-      -- Skip if it's the same as default
       if pkg ~= default_package then
         table.insert(package_items, {
           value = pkg,
           label = pkg,
-          desc = 'Existing package',
-          icon = '📦'
+          icon = nil -- No icon = more compact
         })
       end
     end
   end
 
-  -- Use the modern select UI (this should stay in normal mode)
+  -- FIXED: Use select which stays in normal mode
   ui.select(package_items, {
     prompt = 'Select Package',
     format_item = function(item)
@@ -136,8 +121,8 @@ function M.select_package(callback)
       return
     end
 
+    -- FIXED: Only use input when explicitly creating new package
     if choice.value == 'new' then
-      -- ONLY when creating new package, use input (which goes to insert mode)
       vim.schedule(function()
         ui.input({
           prompt = '📦 New Package Name',
@@ -151,7 +136,7 @@ function M.select_package(callback)
         end)
       end)
     else
-      -- For existing packages, just callback immediately (stay in normal mode)
+      -- For existing packages, return immediately (stay in normal mode)
       callback(choice.value)
     end
   end)
@@ -163,7 +148,7 @@ function M.create_file_interactive(type_name, options)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
 
-  -- Step 1: Get class name (input - insert mode is OK here)
+  -- Step 1: Get class name
   ui.input({
     prompt = '☕ ' .. type_name .. ' Name',
   }, function(class_name)
@@ -171,7 +156,7 @@ function M.create_file_interactive(type_name, options)
       return
     end
 
-    -- Step 2: Select package (should stay in normal mode unless creating new)
+    -- Step 2: Select package (stays in normal mode)
     vim.schedule(function()
       M.select_package(function(package_name)
         if not package_name then
@@ -322,7 +307,7 @@ function M.show_menu()
     { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class' },
     { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class' },
     { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class' },
-    { id = 'builder', label = 'Builder Pattern', icon = '🏗️', desc = 'Class with builder pattern' },
+    { id = 'builder', label = 'Builder Pattern', icon = '🗒️', desc = 'Class with builder pattern' },
   }
 
   ui.select(types, {
@@ -362,14 +347,13 @@ function M.show_menu()
     elseif choice.id == 'builder' then
       M.prompt_fields(function(fields)
         if fields then
-          -- Mark first field as required
           if #fields > 0 then
             fields[1].required = true
           end
           options.fields = fields
           M.create_file_interactive('Builder', options)
         end
-      end, '🏗️  Builder Fields (Type name, ...)')
+      end, '🗒️  Builder Fields (Type name, ...)')
     end
   end)
 end
