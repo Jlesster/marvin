@@ -416,12 +416,15 @@ function M.generate_project(archetype, details, directory)
     end,
     on_exit = function(_, exit_code, _)
       if exit_code == 0 then
+        -- Fix broken Eclipse files if they exist
+        local project_path = directory .. '/' .. details.artifact_id
+        M.fix_eclipse_files(project_path, details.version)
+
         ui.notify('✅ Project created successfully!', vim.log.levels.INFO)
 
         -- Ask to open
         vim.ui.select({ 'Yes', 'No' }, { prompt = 'Open project now?' }, function(choice)
           if choice == 'Yes' then
-            local project_path = directory .. '/' .. details.artifact_id
             vim.cmd('cd ' .. vim.fn.fnameescape(project_path))
             vim.cmd('edit ' .. vim.fn.fnameescape(project_path .. '/pom.xml'))
           end
@@ -433,6 +436,34 @@ function M.generate_project(archetype, details, directory)
       end
     end,
   })
+end
+
+-- Fix broken Eclipse .classpath and .project files
+function M.fix_eclipse_files(project_path, version)
+  local files_to_fix = {
+    project_path .. '/.classpath',
+    project_path .. '/.project',
+  }
+
+  for _, filepath in ipairs(files_to_fix) do
+    if vim.fn.filereadable(filepath) == 1 then
+      local lines = vim.fn.readfile(filepath)
+      local fixed = false
+
+      for i, line in ipairs(lines) do
+        -- Fix: <?xml version="1.0-SNAPSHOT" -> <?xml version="1.0"
+        if line:match('<?xml version="' .. vim.pesc(version) .. '"') then
+          lines[i] = line:gsub(vim.pesc(version), '1.0')
+          fixed = true
+        end
+      end
+
+      if fixed then
+        vim.fn.writefile(lines, filepath)
+        print('Fixed Eclipse file: ' .. filepath)
+      end
+    end
+  end
 end
 
 return M
