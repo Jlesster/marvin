@@ -108,13 +108,25 @@ function M.show()
     end
 
     table.insert(menu_items,
-      { type = 'action', id = 'package', label = 'Package Project (Regular JAR)', icon = '📦', desc =
-      'Build regular JAR with mvn package' })
+      {
+        type = 'action',
+        id = 'package',
+        label = 'Package Project (Regular JAR)',
+        icon = '📦',
+        desc =
+        'Build regular JAR with mvn package'
+      })
 
     if has_assembly then
       table.insert(menu_items,
-        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎯', desc =
-        'Build executable JAR with all dependencies' })
+        {
+          type = 'action',
+          id = 'package_fat',
+          label = 'Build Fat JAR',
+          icon = '🎯',
+          desc =
+          'Build executable JAR with all dependencies'
+        })
     end
 
     table.insert(menu_items,
@@ -273,6 +285,26 @@ function M.handle_action(action_id)
   elseif action_id == 'clean_install' then
     require('marvin.executor').run('clean install')
   end
+end
+
+function M.prompt_java_version()
+  local versions = {
+    { version = '21', label = 'Java 21 (LTS)' },
+    { version = '17', label = 'Java 17 (LTS)' },
+    { version = '11', label = 'Java 11 (LTS)' },
+    { version = '8',  label = 'Java 8 (LTS)' },
+  }
+
+  vim.ui.select(versions, {
+    prompt = '☕ Select Java Version:',
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if choice then
+      require('marvin.dependencies').set_java_version(choice.version)
+    end
+  end)
 end
 
 return M

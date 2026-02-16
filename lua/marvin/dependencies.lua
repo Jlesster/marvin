@@ -518,4 +518,63 @@ function M.find_main_class()
   return nil
 end
 
+function M.set_java_version(version)
+  local ui = require('marvin.ui')
+  local lines, err = read_pom()
+
+  if not lines then
+    ui.notify(err, vim.log.levels.ERROR)
+    return false
+  end
+
+  version = tostring(version)
+
+  -- Properties to add/update
+  local maven_compiler_props = {
+    '<maven.compiler.source>' .. version .. '</maven.compiler.source>',
+    '<maven.compiler.target>' .. version .. '</maven.compiler.target>',
+  }
+
+  -- Check if properties exist
+  local start_idx, end_idx = find_properties_section(lines)
+
+  if start_idx then
+    -- Check if maven.compiler properties already exist
+    local has_source = false
+    local has_target = false
+
+    for i = start_idx, end_idx do
+      if lines[i]:match('maven%.compiler%.source') then
+        -- Update existing
+        lines[i] = '    <maven.compiler.source>' .. version .. '</maven.compiler.source>'
+        has_source = true
+      elseif lines[i]:match('maven%.compiler%.target') then
+        -- Update existing
+        lines[i] = '    <maven.compiler.target>' .. version .. '</maven.compiler.target>'
+        has_target = true
+      end
+    end
+
+    -- Add missing properties
+    if not has_source then
+      table.insert(lines, end_idx, '    <maven.compiler.source>' .. version .. '</maven.compiler.source>')
+      end_idx = end_idx + 1
+    end
+    if not has_target then
+      table.insert(lines, end_idx, '    <maven.compiler.target>' .. version .. '</maven.compiler.target>')
+    end
+  else
+    -- No properties section, create it with Java version
+    lines, success = add_properties(lines, maven_compiler_props)
+    if not success then
+      ui.notify('Failed to set Java version', vim.log.levels.ERROR)
+      return false
+    end
+  end
+
+  write_pom(lines)
+  ui.notify('✅ Java version set to ' .. version, vim.log.levels.INFO)
+  return true
+end
+
 return M
