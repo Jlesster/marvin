@@ -153,8 +153,8 @@ local function ensure_dependency_management(lines)
   for i, line in ipairs(lines) do
     if line:match('<%s*dependencies%s*>') then
       table.insert(lines, i, '')
-      table.insert(lines, i, '    </dependencies>')
       table.insert(lines, i, '  </dependencyManagement>')
+      table.insert(lines, i, '    </dependencies>')
       table.insert(lines, i, '')
       table.insert(lines, i, '    <dependencies>')
       table.insert(lines, i, '  <dependencyManagement>')
