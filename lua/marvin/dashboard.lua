@@ -25,7 +25,7 @@ local function create_popup(title, width, height)
   local win = vim.api.nvim_open_win(buf, true, opts)
 
   vim.api.nvim_set_option_value('winhl', 'Normal:NormalFloat,FloatBorder:FloatBorder', { win = win })
-  vim.api.nvim_set_option_value('cursorline', false, { win = win })
+  vim.api.nvim_set_option_value('cursorline', true, { win = win })
   vim.api.nvim_set_option_value('wrap', false, { win = win })
 
   return buf, win
@@ -147,7 +147,8 @@ function M.show()
         -- Format with selection indicator
         if is_selected then
           table.insert(lines, '  ▶ ' .. item.icon .. '  ' .. item.label)
-          table.insert(highlights, { line = line_num, hl_group = 'Visual', col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num, hl_group = '@keyword', col_start = 0, col_end = 3 })
           table.insert(highlights, { line = line_num, hl_group = item.color, col_start = 6, col_end = -1 })
         else
           table.insert(lines, '    ' .. item.icon .. '  ' .. item.label)
@@ -194,9 +195,10 @@ function M.show()
       vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line, hl.col_start, hl.col_end)
     end
 
-    -- Position cursor
+    -- Position cursor EXACTLY on the line with the arrow
     if #selectable > 0 and current_idx <= #selectable then
-      pcall(vim.api.nvim_win_set_cursor, win, { selectable[current_idx], 0 })
+      local line_num = selectable[current_idx]
+      pcall(vim.api.nvim_win_set_cursor, win, { line_num, 0 })
     end
   end
 
