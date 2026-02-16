@@ -9,6 +9,10 @@ function M.setup(opts)
   local commands = require('marvin.commands')
   commands.register()
 
+  -- Setup keymaps
+  local keymaps = require('marvin.keymaps')
+  keymaps.setup(M.config)
+
   M.setup_autocommands()
 
   local ui = require('marvin.ui')
