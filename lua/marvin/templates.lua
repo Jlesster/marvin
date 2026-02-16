@@ -19,7 +19,6 @@ function M.class_template(name, package, options)
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
-  -- Only add javadoc if enabled in config (unless explicitly overridden in options)
   local should_add_javadoc = options.javadoc
   if should_add_javadoc == nil then
     should_add_javadoc = enable_javadoc
@@ -39,7 +38,6 @@ function M.class_template(name, package, options)
   end
 
   table.insert(lines, modifier .. " class " .. name .. extends .. implements .. " {")
-  table.insert(lines, "")
 
   if options.main then
     table.insert(lines, "  public static void main(String[] args) {")
@@ -92,7 +90,6 @@ function M.interface_template(name, package, options)
   end
 
   table.insert(lines, "public interface " .. name .. extends .. " {")
-  table.insert(lines, "")
   table.insert(lines, "  // TODO: Define methods")
   table.insert(lines, "}")
 
@@ -214,7 +211,6 @@ function M.exception_template(name, package, options)
   end
 
   table.insert(lines, "public class " .. name .. " extends " .. options.extends .. " {")
-  table.insert(lines, "")
   table.insert(lines, "  public " .. name .. "() {")
   table.insert(lines, "    super();")
   table.insert(lines, "  }")
@@ -225,6 +221,65 @@ function M.exception_template(name, package, options)
   table.insert(lines, "")
   table.insert(lines, "  public " .. name .. "(String message, Throwable cause) {")
   table.insert(lines, "    super(message, cause);")
+  table.insert(lines, "  }")
+  table.insert(lines, "}")
+
+  return lines
+end
+
+-- JUnit test template
+function M.test_template(name, package, options)
+  options = options or {}
+  local lines = {}
+
+  if package and package ~= "" then
+    table.insert(lines, "package " .. package .. ";")
+    table.insert(lines, "")
+  end
+
+  table.insert(lines, "import org.junit.jupiter.api.Test;")
+  table.insert(lines, "import org.junit.jupiter.api.BeforeEach;")
+  table.insert(lines, "import org.junit.jupiter.api.AfterEach;")
+  table.insert(lines, "import static org.junit.jupiter.api.Assertions.*;")
+  table.insert(lines, "")
+
+  if options.imports then
+    for _, import in ipairs(options.imports) do
+      table.insert(lines, "import " .. import .. ";")
+    end
+    table.insert(lines, "")
+  end
+
+  -- Get config setting for javadoc
+  local config = require('marvin').config
+  local enable_javadoc = config.java and config.java.enable_javadoc or false
+
+  local should_add_javadoc = options.javadoc
+  if should_add_javadoc == nil then
+    should_add_javadoc = enable_javadoc
+  end
+
+  if should_add_javadoc then
+    table.insert(lines, "/**")
+    table.insert(lines, " * Tests for " .. (options.class_under_test or "class"))
+    table.insert(lines, " */")
+  end
+
+  table.insert(lines, "public class " .. name .. " {")
+  table.insert(lines, "  @BeforeEach")
+  table.insert(lines, "  public void setUp() {")
+  table.insert(lines, "    // Setup test fixtures")
+  table.insert(lines, "  }")
+  table.insert(lines, "")
+  table.insert(lines, "  @AfterEach")
+  table.insert(lines, "  public void tearDown() {")
+  table.insert(lines, "    // Cleanup")
+  table.insert(lines, "  }")
+  table.insert(lines, "")
+  table.insert(lines, "  @Test")
+  table.insert(lines, "  public void testExample() {")
+  table.insert(lines, "    // TODO: Implement test")
+  table.insert(lines, "    fail(\"Not yet implemented\");")
   table.insert(lines, "  }")
   table.insert(lines, "}")
 
@@ -262,7 +317,6 @@ function M.builder_template(name, package, options)
   end
 
   table.insert(lines, "public class " .. name .. " {")
-  table.insert(lines, "")
 
   -- Fields
   for _, field in ipairs(fields) do
