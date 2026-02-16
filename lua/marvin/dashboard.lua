@@ -38,6 +38,17 @@ local function create_popup(title, width, height)
   return buf, win
 end
 
+-- Check if assembly plugin is configured
+local function has_assembly_plugin()
+  local pom_path = vim.fn.getcwd() .. '/pom.xml'
+  if vim.fn.filereadable(pom_path) == 0 then
+    return false
+  end
+
+  local content = table.concat(vim.fn.readfile(pom_path), '\n')
+  return content:match('maven%-assembly%-plugin') ~= nil
+end
+
 -- Show main dashboard
 function M.show()
   local project = require('marvin.project')
@@ -59,20 +70,53 @@ function M.show()
 
     table.insert(menu_items, { type = 'header', label = '📚 Add Dependencies' })
     table.insert(menu_items,
-      { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📄', desc =
-      'Add Jackson JSON library (2.18.2)' })
+      {
+        type = 'action',
+        id = 'add_jackson',
+        label = 'Add Jackson JSON',
+        icon = '📄',
+        desc =
+        'Add Jackson JSON library (2.18.2)'
+      })
     table.insert(menu_items,
-      { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc =
-      'Add LWJGL 3.3.6 with platform natives' })
+      {
+        type = 'action',
+        id = 'add_lwjgl',
+        label = 'Add LWJGL',
+        icon = '🎮',
+        desc =
+        'Add LWJGL 3.3.6 with platform natives'
+      })
 
     table.insert(menu_items, { type = 'separator' })
 
     table.insert(menu_items, { type = 'header', label = '🔧 Build Tools' })
+
+    -- Check if assembly plugin is already configured
+    local has_assembly = has_assembly_plugin()
+
+    if not has_assembly then
+      table.insert(menu_items,
+        {
+          type = 'action',
+          id = 'add_assembly',
+          label = 'Setup Fat JAR Build',
+          icon = '⚙️',
+          desc =
+          'Add Maven Assembly Plugin configuration'
+        })
+    end
+
     table.insert(menu_items,
-      { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc =
-      'Add Maven Assembly Plugin' })
-    table.insert(menu_items,
-      { type = 'action', id = 'package', label = 'Package Project', icon = '📦', desc = 'Build project with mvn package' })
+      { type = 'action', id = 'package', label = 'Package Project (Regular JAR)', icon = '📦', desc =
+      'Build regular JAR with mvn package' })
+
+    if has_assembly then
+      table.insert(menu_items,
+        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎯', desc =
+        'Build executable JAR with all dependencies' })
+    end
+
     table.insert(menu_items,
       { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🧹', desc = 'Run mvn clean install' })
   end
@@ -139,7 +183,7 @@ function M.show()
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
     elseif line:match('═') or line:match('─') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
-    elseif line:match('[📦▶️📄🎮🧹]') then
+    elseif line:match('[📦▶️📄🎮🧹⚙️🎯]') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Special', i - 1, 0, -1)
     elseif line:match('       ') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
@@ -223,6 +267,9 @@ function M.handle_action(action_id)
     require('marvin.dependencies').add_assembly_plugin()
   elseif action_id == 'package' then
     require('marvin.executor').run('package')
+  elseif action_id == 'package_fat' then
+    -- Run assembly:single which creates the fat JAR
+    require('marvin.executor').run('package assembly:single')
   elseif action_id == 'clean_install' then
     require('marvin.executor').run('clean install')
   end
