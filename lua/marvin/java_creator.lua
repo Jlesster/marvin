@@ -151,7 +151,8 @@ function M.create_file_interactive(type_name, options)
       return
     end
 
-    -- Step 2: Select package (stays in normal mode unless creating new)
+    -- Step 2: Select package - ensure we exit insert mode before opening select
+    vim.cmd('stopinsert')
     vim.schedule(function()
       M.select_package(function(package_name)
         if not package_name then
