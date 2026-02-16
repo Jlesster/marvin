@@ -15,6 +15,13 @@ function M.setup(config)
     })
   end
 
+  if keymaps.new_java then
+    vim.keymap.set('n', keymaps.new_java, ':JavaNew<CR>', {
+      desc = 'Create new Java file',
+      silent = true,
+    })
+  end
+
   if keymaps.clean then
     vim.keymap.set('n', keymaps.clean, ':MavenClean<CR>', {
       desc = 'Run mvn clean',

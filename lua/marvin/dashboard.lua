@@ -59,6 +59,15 @@ function M.show()
   local menu_items = {
     { type = 'header', label = '󱁻 Project Actions' },
     { type = 'action', id = 'new_project', label = ' Create New Maven Project', icon = '', desc = 'Generate a new Maven project from archetype' },
+    table.insert(
+      {
+        type = 'action',
+        id = 'new_java_file',
+        label = '☕ Create Java File',
+        icon = '',
+        desc =
+        'Create a new Java class, interface, enum, etc.'
+      })
   }
 
   -- Add Maven-specific actions if in a Maven project
@@ -289,6 +298,8 @@ function M.handle_action(action_id)
     require('marvin.generator').create_project()
   elseif action_id == 'run_goal' then
     require('marvin.ui').show_goal_menu()
+  elseif action_id == 'new_java_file' then
+    require('marvin.java_creator').show_menu()
   elseif action_id == 'add_jackson' then
     require('marvin.dependencies').add_jackson()
   elseif action_id == 'add_lwjgl' then

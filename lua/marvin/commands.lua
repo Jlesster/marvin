@@ -13,6 +13,10 @@ function M.register()
     desc = 'Open Marvin Dashboard',
   })
 
+  vim.api.nvim_create_user_command('JavaNew', function()
+    require('marvin.java_creator').show_menu()
+  end, { desc = 'Create new Java file' })
+
   vim.api.nvim_create_user_command('MavenExec', function(opts)
     M.execute_goal(opts.args)
   end, {
