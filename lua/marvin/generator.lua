@@ -267,21 +267,64 @@ function M.show_local_archetypes()
   local home = os.getenv('HOME') or os.getenv('USERPROFILE')
   local m2_repo = home .. '/.m2/repository'
 
-  -- Run Maven command to list local archetypes
-  local cmd = 'find ' .. m2_repo .. ' -name "*archetype*.jar" -o -name "*archetype*.pom" | head -20'
+  -- Find archetype catalog or archetype metadata files
+  local cmd = 'find "' .. m2_repo .. '" -type f -name "archetype-metadata.xml" 2>/dev/null'
 
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
     on_stdout = function(_, data, _)
       local archetypes = {}
+      local seen = {} -- Track unique archetypes
+
       for _, line in ipairs(data) do
-        if line ~= '' then
-          -- Extract archetype info from path
+        if line ~= '' and line:match('archetype%-metadata%.xml') then
+          -- Extract path: .m2/repository/groupId/artifactId/version/archetype-metadata.xml
+          -- We want groupId:artifactId:version
           local parts = vim.split(line, '/')
-          if #parts >= 3 then
-            local artifact = parts[#parts - 2]
-            if artifact:match('archetype') then
-              table.insert(archetypes, artifact)
+
+          -- Find the position of 'repository' in the path
+          local repo_idx = nil
+          for i, part in ipairs(parts) do
+            if part == 'repository' then
+              repo_idx = i
+              break
+            end
+          end
+
+          if repo_idx and #parts >= repo_idx + 3 then
+            -- Extract components after 'repository'
+            local group_parts = {}
+            local artifact_idx = nil
+
+            -- Collect group ID parts until we hit a version number pattern
+            for i = repo_idx + 1, #parts - 2 do
+              if parts[i]:match('^%d+%.') or parts[i]:match('SNAPSHOT') then
+                -- This is the version
+                artifact_idx = i - 1
+                break
+              end
+            end
+
+            if artifact_idx and artifact_idx > repo_idx then
+              -- Build groupId from parts between repository and artifactId
+              for i = repo_idx + 1, artifact_idx - 1 do
+                table.insert(group_parts, parts[i])
+              end
+
+              local group_id = table.concat(group_parts, '.')
+              local artifact_id = parts[artifact_idx]
+              local version = parts[artifact_idx + 1]
+
+              -- Only include if it has 'archetype' in the artifactId
+              if artifact_id and artifact_id:match('archetype') then
+                local coordinates = group_id .. ':' .. artifact_id .. ':' .. version
+
+                -- Avoid duplicates
+                if not seen[coordinates] then
+                  seen[coordinates] = true
+                  table.insert(archetypes, coordinates)
+                end
+              end
             end
           end
         end
