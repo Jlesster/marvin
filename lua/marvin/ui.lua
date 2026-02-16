@@ -22,76 +22,303 @@ function M.detect_backend()
   end
 end
 
+-- Create centered popup
+local function create_popup(title, width, height)
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ui = vim.api.nvim_list_uis()[1]
+
+  local win_width = width > 1 and width or math.floor(width * ui.width)
+  local win_height = height > 1 and height or math.floor(height * ui.height)
+  local row = math.floor((ui.height - win_height) / 2)
+  local col = math.floor((ui.width - win_width) / 2)
+
+  local opts = {
+    relative = 'editor',
+    width = win_width,
+    height = win_height,
+    row = row,
+    col = col,
+    style = 'minimal',
+    border = {
+      { '╭', 'FloatBorder' },
+      { '─', 'FloatBorder' },
+      { '╮', 'FloatBorder' },
+      { '│', 'FloatBorder' },
+      { '╯', 'FloatBorder' },
+      { '─', 'FloatBorder' },
+      { '╰', 'FloatBorder' },
+      { '│', 'FloatBorder' },
+    },
+    title = title and { { ' ' .. title .. ' ', 'FloatTitle' } } or nil,
+    title_pos = 'center',
+  }
+
+  local win = vim.api.nvim_open_win(buf, true, opts)
+  vim.api.nvim_win_set_option(win, 'winhl', 'Normal:Normal,FloatBorder:FloatBorder')
+
+  return buf, win
+end
+
+-- Integrated popup input
+function M.popup_input(opts, callback)
+  opts = opts or {}
+  local prompt = opts.prompt or 'Input: '
+  local default = opts.default or ''
+
+  local width = opts.width or 60
+  local buf, win = create_popup(prompt, width, 3)
+
+  -- Make buffer modifiable for input
+  vim.api.nvim_buf_set_option(buf, 'modifiable', true)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'prompt')
+
+  -- Set the prompt
+  vim.fn.prompt_setprompt(buf, '> ')
+
+  -- Pre-fill default value
+  if default and default ~= '' then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { default })
+    vim.api.nvim_win_set_cursor(win, { 1, #default })
+  end
+
+  -- Start insert mode
+  vim.cmd('startinsert!')
+
+  -- Handle submission
+  vim.fn.prompt_setcallback(buf, function(text)
+    vim.api.nvim_win_close(win, true)
+    callback(text)
+  end)
+
+  -- Handle cancel
+  local opts_map = { noremap = true, silent = true, buffer = buf }
+  vim.keymap.set({ 'n', 'i' }, '<Esc>', function()
+    vim.api.nvim_win_close(win, true)
+    callback(nil)
+  end, opts_map)
+
+  vim.keymap.set({ 'n', 'i' }, '<C-c>', function()
+    vim.api.nvim_win_close(win, true)
+    callback(nil)
+  end, opts_map)
+end
+
+-- Enhanced select with search
+function M.popup_select(items, opts, callback)
+  opts = opts or {}
+  local prompt = opts.prompt or 'Select: '
+  local format_fn = opts.format_item or function(item)
+    if type(item) == 'table' then
+      return item.label or item.name or tostring(item)
+    end
+    return tostring(item)
+  end
+
+  local formatted_items = {}
+  for i, item in ipairs(items) do
+    table.insert(formatted_items, {
+      index = i,
+      item = item,
+      display = format_fn(item),
+      desc = type(item) == 'table' and item.desc or nil,
+    })
+  end
+
+  local filtered_items = vim.deepcopy(formatted_items)
+  local search_term = ''
+
+  local function render_menu()
+    local lines = {}
+    local height = math.min(#filtered_items + 4, 30)
+
+    -- Header with search
+    table.insert(lines, '')
+    table.insert(lines, '  🔍 ' .. (search_term ~= '' and search_term or '(type to search)'))
+    table.insert(lines, '  ' .. string.rep('─', 68))
+    table.insert(lines, '')
+
+    -- Menu items
+    local selectable = {}
+    local item_map = {}
+
+    for i, formatted in ipairs(filtered_items) do
+      local line_num = #lines + 1
+      table.insert(lines, '    ' .. formatted.display)
+      if formatted.desc then
+        table.insert(lines, '      ' .. formatted.desc)
+      end
+      table.insert(lines, '')
+      table.insert(selectable, line_num)
+      item_map[line_num] = formatted
+    end
+
+    if #filtered_items == 0 then
+      table.insert(lines, '  No matches found')
+      table.insert(lines, '')
+    end
+
+    table.insert(lines, '  ' .. string.rep('─', 68))
+    table.insert(lines, '  ↑/↓ Navigate  │  Enter Select  │  Esc Cancel  │  Type to search')
+    table.insert(lines, '')
+
+    return lines, selectable, item_map, height
+  end
+
+  local lines, selectable, item_map, height = render_menu()
+  local buf, win = create_popup(prompt, 76, height)
+
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_win_set_option(win, 'cursorline', true)
+
+  -- Highlighting
+  local ns = vim.api.nvim_create_namespace('marvin_select_menu')
+  for i, line in ipairs(lines) do
+    if line:match('🔍') then
+      vim.api.nvim_buf_add_highlight(buf, ns, '@lsp.type.namespace', i - 1, 0, -1)
+    elseif line:match('─') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
+    elseif line:match('^%s%s%s%s%s%s%S') then
+      vim.api.nvim_buf_add_highlight(buf, ns, '@comment', i - 1, 0, -1)
+    elseif line:match('Navigate') then
+      vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
+    end
+  end
+
+  -- Selection state
+  local current_idx = 1
+  local highlight_ns = vim.api.nvim_create_namespace('marvin_select_highlight')
+
+  local function update_highlight()
+    vim.api.nvim_buf_clear_namespace(buf, highlight_ns, 0, -1)
+    if #selectable > 0 and current_idx <= #selectable then
+      local line_num = selectable[current_idx]
+      vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'Visual', line_num - 1, 0, -1)
+      vim.api.nvim_win_set_cursor(win, { line_num, 0 })
+    end
+  end
+
+  local function update_search(char)
+    if char == '<BS>' then
+      search_term = search_term:sub(1, -2)
+    else
+      search_term = search_term .. char
+    end
+
+    -- Filter items
+    filtered_items = {}
+    for _, formatted in ipairs(formatted_items) do
+      if search_term == '' or formatted.display:lower():find(search_term:lower(), 1, true) then
+        table.insert(filtered_items, formatted)
+      end
+    end
+
+    -- Re-render
+    current_idx = 1
+    lines, selectable, item_map, height = render_menu()
+
+    vim.api.nvim_buf_set_option(buf, 'modifiable', true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+
+    -- Re-highlight
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    for i, line in ipairs(lines) do
+      if line:match('🔍') then
+        vim.api.nvim_buf_add_highlight(buf, ns, '@lsp.type.namespace', i - 1, 0, -1)
+      elseif line:match('─') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
+      elseif line:match('^%s%s%s%s%s%s%S') then
+        vim.api.nvim_buf_add_highlight(buf, ns, '@comment', i - 1, 0, -1)
+      elseif line:match('Navigate') then
+        vim.api.nvim_buf_add_highlight(buf, ns, 'LineNr', i - 1, 0, -1)
+      end
+    end
+
+    update_highlight()
+  end
+
+  update_highlight()
+
+  local function select()
+    if #selectable == 0 then return end
+    local line_num = selectable[current_idx]
+    local formatted = item_map[line_num]
+    if formatted then
+      vim.api.nvim_win_close(win, true)
+      callback(formatted.item)
+    end
+  end
+
+  -- Keymaps
+  local map_opts = { noremap = true, silent = true, buffer = buf }
+
+  vim.keymap.set('n', 'j', function()
+    if current_idx < #selectable then
+      current_idx = current_idx + 1
+      update_highlight()
+    end
+  end, map_opts)
+
+  vim.keymap.set('n', 'k', function()
+    if current_idx > 1 then
+      current_idx = current_idx - 1
+      update_highlight()
+    end
+  end, map_opts)
+
+  vim.keymap.set('n', '<Down>', function()
+    if current_idx < #selectable then
+      current_idx = current_idx + 1
+      update_highlight()
+    end
+  end, map_opts)
+
+  vim.keymap.set('n', '<Up>', function()
+    if current_idx > 1 then
+      current_idx = current_idx - 1
+      update_highlight()
+    end
+  end, map_opts)
+
+  vim.keymap.set('n', '<CR>', select, map_opts)
+
+  vim.keymap.set('n', 'q', function()
+    vim.api.nvim_win_close(win, true)
+    callback(nil)
+  end, map_opts)
+
+  vim.keymap.set('n', '<Esc>', function()
+    vim.api.nvim_win_close(win, true)
+    callback(nil)
+  end, map_opts)
+
+  vim.keymap.set('n', '<BS>', function()
+    update_search('<BS>')
+  end, map_opts)
+
+  -- Type to search
+  for i = 32, 126 do
+    local char = string.char(i)
+    vim.keymap.set('n', char, function()
+      update_search(char)
+    end, map_opts)
+  end
+end
+
 function M.select(items, opts, callback)
   opts = opts or {}
 
-  if M.backend == 'snacks' then
-    M.select_snacks(items, opts, callback)
-  elseif M.backend == 'dressing' then
-    M.select_dressing(items, opts, callback)
-  else
-    M.select_builtin(items, opts, callback)
-  end
-end
-
-function M.select_dressing(items, opts, callback)
-  vim.ui.select(items, {
-    prompt = opts.prompt or 'Select:',
-    format_item = opts.format_item or function(item)
-      if type(item) == 'table' then
-        return item.label or item.name or tostring(item)
-      end
-      return tostring(item)
-    end,
-  }, callback)
-end
-
-function M.select_snacks(items, opts, callback)
-  -- Snacks picker can be finicky - fall back to vim.ui.select
-  -- which dressing.nvim will enhance if available
-  vim.ui.select(items, {
-    prompt = opts.prompt or 'Select:',
-    format_item = opts.format_item or function(item)
-      if type(item) == 'table' then
-        return item.label or item.name or tostring(item)
-      end
-      return tostring(item)
-    end,
-  }, callback)
-end
-
-function M.select_builtin(items, opts, callback)
-  local choices = { opts.prompt or 'Select:' }
-
-  for i, item in ipairs(items) do
-    local label = item
-    if type(item) == 'table' then
-      label = item.label or item.name or tostring(item)
-    end
-    table.insert(choices, string.format('%d. %s', i, label))
-  end
-
-  local choice = vim.fn.inputlist(choices)
-
-  if choice > 0 and choice <= #items then
-    callback(items[choice])
-  else
-    callback(nil)
-  end
+  -- Use popup select for better UX
+  M.popup_select(items, opts, callback)
 end
 
 function M.input(opts, callback)
   opts = opts or {}
 
-  if M.backend == 'snacks' or M.backend == 'dressing' then
-    vim.ui.input({
-      prompt = opts.prompt or 'Input:',
-      default = opts.default or '',
-    }, callback)
-  else
-    local result = vim.fn.input(opts.prompt or 'Input: ', opts.default or '')
-    callback(result)
-  end
+  -- Use popup input for better UX
+  M.popup_input(opts, callback)
 end
 
 function M.notify(message, level, opts)

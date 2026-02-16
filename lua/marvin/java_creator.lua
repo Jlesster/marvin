@@ -1,28 +1,122 @@
 local M = {}
 
--- Create a new Java file
-function M.create_file(type_name, options)
+-- Scan for packages in project
+local function scan_packages()
+  local project = require('marvin.project').get_project()
+
+  if not project then
+    return {}
+  end
+
+  local packages = {}
+  local src_paths = {
+    project.root .. '/src/main/java',
+    project.root .. '/src/test/java',
+  }
+
+  for _, src_path in ipairs(src_paths) do
+    if vim.fn.isdirectory(src_path) == 1 then
+      -- Use find command to get all directories
+      local cmd = string.format('find "%s" -type d 2>/dev/null', src_path)
+      local handle = io.popen(cmd)
+
+      if handle then
+        for dir in handle:lines() do
+          -- Convert path to package name
+          local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
+          if package ~= '' and not packages[package] then
+            packages[package] = true
+          end
+        end
+        handle:close()
+      end
+    end
+  end
+
+  -- Convert to array and sort
+  local package_list = {}
+  for pkg, _ in pairs(packages) do
+    table.insert(package_list, pkg)
+  end
+  table.sort(package_list)
+
+  return package_list
+end
+
+-- Create package selector
+function M.select_package(callback)
+  local templates = require('marvin.templates')
+  local ui = require('marvin.ui')
+
+  local packages = scan_packages()
+  local current_package = templates.get_package_from_path()
+  local default_package = current_package or templates.get_default_package()
+
+  -- Add options for new package and default
+  local package_items = {
+    { value = default_package, label = '📍 Current: ' .. default_package, desc = 'Use current/default package' },
+    { value = 'new', label = '✨ Create New Package', desc = 'Enter a new package name' },
+  }
+
+  if #packages > 0 then
+    table.insert(package_items, { value = 'separator', label = '────────────────────' })
+    for _, pkg in ipairs(packages) do
+      table.insert(package_items, {
+        value = pkg,
+        label = '📦 ' .. pkg,
+        desc = 'Existing package',
+      })
+    end
+  end
+
+  ui.select(package_items, {
+    prompt = '📦 Select Package',
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if not choice then
+      callback(nil)
+      return
+    end
+
+    if choice.value == 'separator' then
+      M.select_package(callback)
+      return
+    end
+
+    if choice.value == 'new' then
+      ui.input({
+        prompt = '📦 New Package Name: ',
+        default = default_package,
+      }, function(new_package)
+        callback(new_package)
+      end)
+    else
+      callback(choice.value)
+    end
+  end)
+end
+
+-- Create a new Java file with package selector
+function M.create_file_interactive(type_name, options)
   options = options or {}
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
 
-  -- Get class name
+  -- Step 1: Get class name
   ui.input({
-    prompt = type_name .. ' name: ',
+    prompt = '☕ ' .. type_name .. ' Name: ',
   }, function(class_name)
     if not class_name or class_name == '' then
       return
     end
 
-    -- Determine package
-    local current_package = templates.get_package_from_path()
-    local default_package = current_package or templates.get_default_package()
-
-    ui.input({
-      prompt = 'Package (leave empty for default): ',
-      default = default_package,
-    }, function(package_name)
-      package_name = package_name or default_package
+    -- Step 2: Select package
+    M.select_package(function(package_name)
+      if not package_name then
+        return
+      end
 
       -- Generate content based on type
       local lines
@@ -66,7 +160,7 @@ function M.create_file(type_name, options)
       -- Open the file
       vim.cmd('edit ' .. file_path)
 
-      ui.notify('Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
+      ui.notify('✅ Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
     end)
   end)
 end
@@ -106,70 +200,12 @@ function M.write_file(file_path, lines)
   file:close()
 end
 
--- Show creation menu
-function M.show_menu()
-  local ui = require('marvin.ui')
-
-  local types = {
-    { id = 'class', label = '☕ Java Class', desc = 'Standard Java class' },
-    { id = 'class_main', label = '🚀 Main Class', desc = 'Class with main method' },
-    { id = 'interface', label = '📋 Interface', desc = 'Java interface' },
-    { id = 'enum', label = '🔢 Enum', desc = 'Enumeration type' },
-    { id = 'record', label = '📦 Record', desc = 'Java record (14+)' },
-    { id = 'abstract', label = '🎨 Abstract Class', desc = 'Abstract class' },
-    { id = 'exception', label = '❌ Exception', desc = 'Custom exception class' },
-    { id = 'test', label = '🧪 JUnit Test', desc = 'JUnit test class' },
-    { id = 'builder', label = '🏗️  Builder Pattern', desc = 'Class with builder pattern' },
-  }
-
-  ui.select(types, {
-    prompt = '☕ Create Java File:',
-    format_item = function(item)
-      return item.label .. ' - ' .. item.desc
-    end,
-  }, function(choice)
-    if not choice then return end
-
-    local options = {}
-
-    if choice.id == 'class' then
-      M.create_file('Class', options)
-    elseif choice.id == 'class_main' then
-      options.main = true
-      M.create_file('Class', options)
-    elseif choice.id == 'interface' then
-      M.create_file('Interface', options)
-    elseif choice.id == 'enum' then
-      M.prompt_enum_values(function(values)
-        options.values = values
-        M.create_file('Enum', options)
-      end)
-    elseif choice.id == 'record' then
-      M.prompt_record_fields(function(fields)
-        options.fields = fields
-        M.create_file('Record', options)
-      end)
-    elseif choice.id == 'abstract' then
-      M.create_file('Abstract Class', options)
-    elseif choice.id == 'exception' then
-      M.create_file('Exception', options)
-    elseif choice.id == 'test' then
-      M.create_file('Test', options)
-    elseif choice.id == 'builder' then
-      M.prompt_builder_fields(function(fields)
-        options.fields = fields
-        M.create_file('Builder', options)
-      end)
-    end
-  end)
-end
-
--- Prompt for enum values
+-- Prompt for enum values in popup
 function M.prompt_enum_values(callback)
   local ui = require('marvin.ui')
 
   ui.input({
-    prompt = 'Enum values (comma-separated): ',
+    prompt = '🔢 Enum Values (comma-separated): ',
     default = 'VALUE1, VALUE2, VALUE3',
   }, function(input)
     if not input or input == '' then
@@ -186,12 +222,12 @@ function M.prompt_enum_values(callback)
   end)
 end
 
--- Prompt for record fields
-function M.prompt_record_fields(callback)
+-- Prompt for record/builder fields in popup
+function M.prompt_fields(callback, prompt_text)
   local ui = require('marvin.ui')
 
   ui.input({
-    prompt = 'Record fields (type name, ...): ',
+    prompt = prompt_text or '📋 Fields (Type name, ...): ',
     default = 'String name, int value',
   }, function(input)
     if not input or input == '' then
@@ -212,20 +248,68 @@ function M.prompt_record_fields(callback)
   end)
 end
 
--- Prompt for builder fields
-function M.prompt_builder_fields(callback)
-  M.prompt_record_fields(function(fields)
-    if not fields then
-      callback(nil)
-      return
-    end
+-- Show creation menu
+function M.show_menu()
+  local ui = require('marvin.ui')
 
-    -- Mark first field as required by default
-    if #fields > 0 then
-      fields[1].required = true
-    end
+  local types = {
+    { id = 'class', label = '☕ Java Class', desc = 'Standard Java class' },
+    { id = 'class_main', label = '🚀 Main Class', desc = 'Class with main method' },
+    { id = 'interface', label = '📋 Interface', desc = 'Java interface' },
+    { id = 'enum', label = '🔢 Enum', desc = 'Enumeration type' },
+    { id = 'record', label = '📦 Record', desc = 'Java record (14+)' },
+    { id = 'abstract', label = '🎨 Abstract Class', desc = 'Abstract class' },
+    { id = 'exception', label = '❌ Exception', desc = 'Custom exception class' },
+    { id = 'test', label = '🧪 JUnit Test', desc = 'JUnit test class' },
+    { id = 'builder', label = '🏗️  Builder Pattern', desc = 'Class with builder pattern' },
+  }
 
-    callback(fields)
+  ui.select(types, {
+    prompt = '☕ Create Java File',
+  }, function(choice)
+    if not choice then return end
+
+    local options = {}
+
+    if choice.id == 'class' then
+      M.create_file_interactive('Class', options)
+    elseif choice.id == 'class_main' then
+      options.main = true
+      M.create_file_interactive('Class', options)
+    elseif choice.id == 'interface' then
+      M.create_file_interactive('Interface', options)
+    elseif choice.id == 'enum' then
+      M.prompt_enum_values(function(values)
+        if values then
+          options.values = values
+          M.create_file_interactive('Enum', options)
+        end
+      end)
+    elseif choice.id == 'record' then
+      M.prompt_fields(function(fields)
+        if fields then
+          options.fields = fields
+          M.create_file_interactive('Record', options)
+        end
+      end, '📦 Record Fields (Type name, ...): ')
+    elseif choice.id == 'abstract' then
+      M.create_file_interactive('Abstract Class', options)
+    elseif choice.id == 'exception' then
+      M.create_file_interactive('Exception', options)
+    elseif choice.id == 'test' then
+      M.create_file_interactive('Test', options)
+    elseif choice.id == 'builder' then
+      M.prompt_fields(function(fields)
+        if fields then
+          -- Mark first field as required
+          if #fields > 0 then
+            fields[1].required = true
+          end
+          options.fields = fields
+          M.create_file_interactive('Builder', options)
+        end
+      end, '🏗️  Builder Fields (Type name, ...): ')
+    end
   end)
 end
 
