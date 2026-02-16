@@ -1,6 +1,6 @@
 local M = {}
 
--- Scan for packages in project
+-- Scan for packages in project (filtered and smart)
 local function scan_packages()
   local project = require('marvin.project').get_project()
 
@@ -16,16 +16,35 @@ local function scan_packages()
 
   for _, src_path in ipairs(src_paths) do
     if vim.fn.isdirectory(src_path) == 1 then
-      -- Use find command to get all directories
-      local cmd = string.format('find "%s" -type d 2>/dev/null', src_path)
+      -- Use find but exclude hidden directories
+      local cmd = string.format('find "%s" -type d 2>/dev/null | grep -v "/\\."', src_path)
       local handle = io.popen(cmd)
 
       if handle then
         for dir in handle:lines() do
-          -- Convert path to package name
-          local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
-          if package ~= '' and not packages[package] then
-            packages[package] = true
+          -- Skip the base source directory itself
+          if dir ~= src_path then
+            -- Convert path to package name
+            local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
+
+            -- Filter out problematic packages
+            if package ~= '' and not packages[package] then
+              -- Skip packages with dots at start or that look like hidden dirs
+              local has_hidden = package:match('^%.') or package:match('%/%.') or dir:match('%/%.')
+
+              -- Skip packages that are too deep (more than 5 levels)
+              local depth = select(2, package:gsub('%.', '.'))
+
+              -- Must be valid Java package (lowercase start, valid chars)
+              local is_valid = package:match('^[a-z][a-z0-9_]*') and not package:match('[A-Z]')
+
+              -- Check if directory contains actual Java files
+              local has_java_files = vim.fn.glob(dir .. '/*.java') ~= ''
+
+              if not has_hidden and depth <= 5 and is_valid and has_java_files then
+                packages[package] = true
+              end
+            end
           end
         end
         handle:close()
@@ -50,6 +69,15 @@ local function scan_packages()
     return a_depth < b_depth
   end)
 
+  -- Limit to top 10 most relevant packages if too many
+  if #package_list > 10 then
+    local limited = {}
+    for i = 1, 10 do
+      table.insert(limited, package_list[i])
+    end
+    return limited
+  end
+
   return package_list
 end
 
@@ -68,8 +96,8 @@ function M.select_package(callback)
   -- Add current/default at top
   table.insert(package_items, {
     value = default_package,
-    label = default_package .. ' (current)',
-    desc = 'Use current/default package',
+    label = default_package,
+    desc = 'Current/default package',
     icon = '📍'
   })
 
@@ -81,26 +109,22 @@ function M.select_package(callback)
     icon = '✨'
   })
 
-  -- Add existing packages if any
+  -- Add existing packages if any (compact list)
   if #packages > 0 then
     for _, pkg in ipairs(packages) do
       -- Skip if it's the same as default
       if pkg ~= default_package then
-        -- Calculate depth for visual indent
-        local depth = select(2, pkg:gsub('%.', '.'))
-        local indent = string.rep('  ', math.min(depth, 3))
-
         table.insert(package_items, {
           value = pkg,
           label = pkg,
-          desc = 'Existing package (' .. depth .. ' levels)',
+          desc = 'Existing package',
           icon = '📦'
         })
       end
     end
   end
 
-  -- Use the modern select UI
+  -- Use the modern select UI (this should stay in normal mode)
   ui.select(package_items, {
     prompt = 'Select Package',
     format_item = function(item)
@@ -113,18 +137,21 @@ function M.select_package(callback)
     end
 
     if choice.value == 'new' then
-      -- Use modern input UI
-      ui.input({
-        prompt = '📦 New Package Name',
-        default = default_package,
-      }, function(new_package)
-        if new_package and new_package ~= '' then
-          callback(new_package)
-        else
-          callback(nil)
-        end
+      -- ONLY when creating new package, use input (which goes to insert mode)
+      vim.schedule(function()
+        ui.input({
+          prompt = '📦 New Package Name',
+          default = default_package,
+        }, function(new_package)
+          if new_package and new_package ~= '' then
+            callback(new_package)
+          else
+            callback(nil)
+          end
+        end)
       end)
     else
+      -- For existing packages, just callback immediately (stay in normal mode)
       callback(choice.value)
     end
   end)
@@ -136,7 +163,7 @@ function M.create_file_interactive(type_name, options)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
 
-  -- Step 1: Get class name
+  -- Step 1: Get class name (input - insert mode is OK here)
   ui.input({
     prompt = '☕ ' .. type_name .. ' Name',
   }, function(class_name)
@@ -144,55 +171,57 @@ function M.create_file_interactive(type_name, options)
       return
     end
 
-    -- Step 2: Select package
-    M.select_package(function(package_name)
-      if not package_name then
-        return
-      end
+    -- Step 2: Select package (should stay in normal mode unless creating new)
+    vim.schedule(function()
+      M.select_package(function(package_name)
+        if not package_name then
+          return
+        end
 
-      -- Generate content based on type
-      local lines
-      if type_name == 'Class' then
-        lines = templates.class_template(class_name, package_name, options)
-      elseif type_name == 'Interface' then
-        lines = templates.interface_template(class_name, package_name, options)
-      elseif type_name == 'Enum' then
-        lines = templates.enum_template(class_name, package_name, options)
-      elseif type_name == 'Record' then
-        lines = templates.record_template(class_name, package_name, options)
-      elseif type_name == 'Abstract Class' then
-        lines = templates.abstract_class_template(class_name, package_name, options)
-      elseif type_name == 'Exception' then
-        lines = templates.exception_template(class_name, package_name, options)
-      elseif type_name == 'Test' then
-        lines = templates.test_template(class_name, package_name, options)
-      elseif type_name == 'Builder' then
-        lines = templates.builder_template(class_name, package_name, options)
-      end
+        -- Generate content based on type
+        local lines
+        if type_name == 'Class' then
+          lines = templates.class_template(class_name, package_name, options)
+        elseif type_name == 'Interface' then
+          lines = templates.interface_template(class_name, package_name, options)
+        elseif type_name == 'Enum' then
+          lines = templates.enum_template(class_name, package_name, options)
+        elseif type_name == 'Record' then
+          lines = templates.record_template(class_name, package_name, options)
+        elseif type_name == 'Abstract Class' then
+          lines = templates.abstract_class_template(class_name, package_name, options)
+        elseif type_name == 'Exception' then
+          lines = templates.exception_template(class_name, package_name, options)
+        elseif type_name == 'Test' then
+          lines = templates.test_template(class_name, package_name, options)
+        elseif type_name == 'Builder' then
+          lines = templates.builder_template(class_name, package_name, options)
+        end
 
-      if not lines then
-        vim.notify('Unknown type: ' .. type_name, vim.log.levels.ERROR)
-        return
-      end
+        if not lines then
+          vim.notify('Unknown type: ' .. type_name, vim.log.levels.ERROR)
+          return
+        end
 
-      -- Determine file path
-      local file_path = M.get_file_path(class_name, package_name, type_name)
+        -- Determine file path
+        local file_path = M.get_file_path(class_name, package_name, type_name)
 
-      if not file_path then
-        return
-      end
+        if not file_path then
+          return
+        end
 
-      -- Create directory if it doesn't exist
-      local dir = vim.fn.fnamemodify(file_path, ':h')
-      vim.fn.mkdir(dir, 'p')
+        -- Create directory if it doesn't exist
+        local dir = vim.fn.fnamemodify(file_path, ':h')
+        vim.fn.mkdir(dir, 'p')
 
-      -- Write file
-      M.write_file(file_path, lines)
+        -- Write file
+        M.write_file(file_path, lines)
 
-      -- Open the file
-      vim.cmd('edit ' .. file_path)
+        -- Open the file
+        vim.cmd('edit ' .. file_path)
 
-      ui.notify('✅ Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
+        ui.notify('✅ Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
+      end)
     end)
   end)
 end

@@ -140,24 +140,29 @@ function M.show()
       elseif item.type == 'action' then
         item_idx = item_idx + 1
         local is_selected = item_idx == current_idx
-        local line_num = #lines + 1
 
+        -- Add blank line before
         table.insert(lines, '')
+
+        -- This is the line with the text and arrow
+        local line_num = #lines + 1
 
         -- Format with selection indicator
         if is_selected then
           table.insert(lines, '  ▶ ' .. item.icon .. '  ' .. item.label)
-          table.insert(highlights, { line = line_num, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
-          table.insert(highlights, { line = line_num, hl_group = '@keyword', col_start = 0, col_end = 3 })
-          table.insert(highlights, { line = line_num, hl_group = item.color, col_start = 6, col_end = -1 })
+          table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 3 })
+          table.insert(highlights, { line = line_num - 1, hl_group = item.color, col_start = 6, col_end = -1 })
         else
           table.insert(lines, '    ' .. item.icon .. '  ' .. item.label)
-          table.insert(highlights, { line = line_num, hl_group = item.color, col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num - 1, hl_group = item.color, col_start = 0, col_end = -1 })
         end
 
+        -- Add description
         table.insert(lines, '      ' .. item.desc)
-        table.insert(highlights, { line = line_num + 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+        table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
 
+        -- Store the line number (this is the line with arrow/icon)
         table.insert(selectable, line_num)
         action_map[line_num] = item.id
       end
@@ -195,9 +200,10 @@ function M.show()
       vim.api.nvim_buf_add_highlight(buf, ns, hl.hl_group, hl.line, hl.col_start, hl.col_end)
     end
 
-    -- Position cursor EXACTLY on the line with the arrow
+    -- Position cursor EXACTLY on the line with the arrow (convert to 1-indexed)
     if #selectable > 0 and current_idx <= #selectable then
       local line_num = selectable[current_idx]
+      -- line_num is already correct, it points to the line with the icon/arrow
       pcall(vim.api.nvim_win_set_cursor, win, { line_num, 0 })
     end
   end
