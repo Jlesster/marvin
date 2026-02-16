@@ -150,7 +150,7 @@ function M.show_archetype_wizard()
   table.insert(lines, '')
   table.insert(lines, '')
   table.insert(lines, '  ┌' .. string.rep('─', 70) .. '┐')
-  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc            │')
+  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc    │')
   table.insert(lines, '  └' .. string.rep('─', 70) .. '┘')
 
   -- Calculate window size based on content
@@ -755,18 +755,45 @@ function M.generate(archetype, details, directory)
 
   local cmd = table.concat(cmd_parts, ' ')
 
+  -- Debug: print the command
+  print('Maven command: ' .. cmd)
   ui.notify('🔨 Generating project...', vim.log.levels.INFO)
 
   M.show_generation_progress(details.artifact_id)
 
+  -- Capture output for debugging
+  local output = {}
+
   vim.fn.jobstart(cmd, {
     cwd = directory,
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data, _)
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          table.insert(output, line)
+          print('[MAVEN] ' .. line)
+        end
+      end
+    end,
+    on_stderr = function(_, data, _)
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          table.insert(output, line)
+          print('[MAVEN ERR] ' .. line)
+        end
+      end
+    end,
     on_exit = function(_, exit_code, _)
       if exit_code == 0 then
         M.on_generation_complete(details, directory)
       else
-        ui.notify('❌ Project generation failed!', vim.log.levels.ERROR)
         M.close_progress_window()
+        ui.notify('❌ Project generation failed! Exit code: ' .. exit_code, vim.log.levels.ERROR)
+
+        -- Show error details
+        local error_msg = 'Maven generation failed:\n' .. table.concat(output, '\n')
+        vim.notify(error_msg, vim.log.levels.ERROR)
       end
     end,
   })
