@@ -102,6 +102,7 @@ function M.select_package(callback)
   -- Use select which stays in normal mode
   ui.select(package_items, {
     prompt = '📦 Select Package',
+    enable_search = true, -- Enable search for package selector
     format_item = function(item)
       return item.label
     end,

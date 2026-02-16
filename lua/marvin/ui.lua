@@ -98,6 +98,7 @@ end
 function M.popup_select(items, opts, callback)
   opts = opts or {}
   local prompt = opts.prompt or 'Select'
+  local enable_search = opts.enable_search or false
   local format_fn = opts.format_item or function(item)
     if type(item) == 'table' then
       return item.label or item.name or tostring(item)
@@ -114,12 +115,37 @@ function M.popup_select(items, opts, callback)
       display = format_fn(item),
       desc = type(item) == 'table' and item.desc or nil,
       icon = type(item) == 'table' and item.icon or nil,
+      is_separator = type(item) == 'table' and item.is_separator or false,
     })
   end
 
   local filtered_items = vim.deepcopy(formatted_items)
   local search_term = ''
   local current_idx = 1
+
+  -- Find first non-separator item
+  local function find_next_selectable(start_idx, direction)
+    local idx = start_idx
+    local count = #filtered_items
+
+    for _ = 1, count do
+      if not filtered_items[idx].is_separator then
+        return idx
+      end
+
+      if direction == 'down' then
+        idx = idx % count + 1
+      else
+        idx = idx - 1
+        if idx < 1 then idx = count end
+      end
+    end
+
+    return start_idx
+  end
+
+  -- Initialize to first selectable item
+  current_idx = find_next_selectable(1, 'down')
 
   -- Create window
   local max_height = math.min(#filtered_items + 10, 40)
@@ -130,15 +156,19 @@ function M.popup_select(items, opts, callback)
     local lines = {}
     local highlights = {}
 
-    -- Search bar
-    table.insert(lines, '')
-    local search_display = search_term == '' and '  Type to search...' or '  ' .. search_term .. '▮'
-    table.insert(lines, search_display)
-    table.insert(highlights,
-      { line = #lines - 1, hl_group = search_term == '' and 'Comment' or '@string', col_start = 0, col_end = -1 })
+    if enable_search then
+      -- Search bar
+      table.insert(lines, '')
+      local search_display = search_term == '' and '  Type to search...' or '  ' .. search_term .. '▮'
+      table.insert(lines, search_display)
+      table.insert(highlights,
+        { line = #lines - 1, hl_group = search_term == '' and 'Comment' or '@string', col_start = 0, col_end = -1 })
 
-    table.insert(lines, '  ' .. string.rep('─', 76))
-    table.insert(highlights, { line = #lines - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+      table.insert(lines, '  ' .. string.rep('─', 76))
+      table.insert(highlights, { line = #lines - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+    else
+      table.insert(lines, '')
+    end
 
     -- Items (COMPACT - no blank lines)
     local selectable = {}
@@ -151,35 +181,42 @@ function M.popup_select(items, opts, callback)
     else
       for i, formatted in ipairs(filtered_items) do
         local line_num = #lines + 1
-        local is_selected = i == current_idx
 
-        -- Selection indicator
-        local indicator = is_selected and '▶ ' or '  '
-        local icon_str = formatted.icon and (formatted.icon .. ' ') or ''
-
-        table.insert(lines, indicator .. icon_str .. formatted.display)
-        table.insert(selectable, line_num)
-        item_map[line_num] = formatted
-
-        -- Highlight selected item
-        if is_selected then
-          table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
-          table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
+        if formatted.is_separator then
+          -- Separator rendering
+          table.insert(lines, formatted.display)
+          table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
         else
-          table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
-        end
+          local is_selected = i == current_idx
 
-        -- Description on same line if short, otherwise next line
-        if formatted.desc then
-          if #formatted.desc < 40 then
-            -- Short desc: append to same line
-            local desc_start = #lines[#lines]
-            lines[#lines] = lines[#lines] .. '  • ' .. formatted.desc
-            table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = desc_start, col_end = -1 })
+          -- Selection indicator
+          local indicator = is_selected and '▶ ' or '  '
+          local icon_str = formatted.icon and (formatted.icon .. ' ') or ''
+
+          table.insert(lines, indicator .. icon_str .. formatted.display)
+          table.insert(selectable, line_num)
+          item_map[line_num] = formatted
+
+          -- Highlight selected item
+          if is_selected then
+            table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
+            table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
           else
-            -- Long desc: new line (but still no blank line after)
-            table.insert(lines, '    ' .. formatted.desc)
-            table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+            table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
+          end
+
+          -- Description on same line if short, otherwise next line
+          if formatted.desc then
+            if #formatted.desc < 40 then
+              -- Short desc: append to same line
+              local desc_start = #lines[#lines]
+              lines[#lines] = lines[#lines] .. '  • ' .. formatted.desc
+              table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = desc_start, col_end = -1 })
+            else
+              -- Long desc: new line (but still no blank line after)
+              table.insert(lines, '    ' .. formatted.desc)
+              table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+            end
           end
         end
 
@@ -220,8 +257,14 @@ function M.popup_select(items, opts, callback)
     end
 
     -- Smooth scroll to current item
-    if #selectable > 0 and current_idx <= #selectable then
-      pcall(vim.api.nvim_win_set_cursor, win, { selectable[current_idx], 0 })
+    if #selectable > 0 and current_idx <= #filtered_items then
+      -- Find the line number for current_idx
+      for line_num, formatted in pairs(item_map) do
+        if formatted.index == filtered_items[current_idx].index then
+          pcall(vim.api.nvim_win_set_cursor, win, { line_num, 0 })
+          break
+        end
+      end
     end
   end
 
@@ -255,6 +298,9 @@ function M.popup_select(items, opts, callback)
       current_idx = 1
     end
 
+    -- Ensure we're on a selectable item
+    current_idx = find_next_selectable(current_idx, 'down')
+
     lines, selectable, item_map, highlights = render()
     update_display()
   end
@@ -264,9 +310,9 @@ function M.popup_select(items, opts, callback)
 
   -- Selection handler
   local function select()
-    if #selectable == 0 then return end
-    local line_num = selectable[current_idx]
-    local formatted = item_map[line_num]
+    if #filtered_items == 0 or filtered_items[current_idx].is_separator then return end
+
+    local formatted = filtered_items[current_idx]
     if formatted then
       vim.api.nvim_win_close(win, true)
       callback(formatted.item)
@@ -278,9 +324,12 @@ function M.popup_select(items, opts, callback)
     if #filtered_items == 0 then return end
 
     if direction == 'down' then
-      current_idx = current_idx < #filtered_items and current_idx + 1 or 1
+      current_idx = current_idx % #filtered_items + 1
+      current_idx = find_next_selectable(current_idx, 'down')
     elseif direction == 'up' then
-      current_idx = current_idx > 1 and current_idx - 1 or #filtered_items
+      current_idx = current_idx - 1
+      if current_idx < 1 then current_idx = #filtered_items end
+      current_idx = find_next_selectable(current_idx, 'up')
     end
 
     lines, selectable, item_map, highlights = render()
@@ -313,23 +362,32 @@ function M.popup_select(items, opts, callback)
     callback(nil)
   end, map_opts)
 
-  -- Search
-  vim.keymap.set('n', '<BS>', function() update_search('<BS>') end, map_opts)
-  vim.keymap.set('n', '<C-u>', function() update_search('<C-u>') end, map_opts)
+  -- Only enable search if explicitly requested
+  if enable_search then
+    vim.keymap.set('n', '<BS>', function() update_search('<BS>') end, map_opts)
+    vim.keymap.set('n', '<C-u>', function() update_search('<C-u>') end, map_opts)
 
-  -- Type to search (alphanumeric and symbols)
-  for i = 32, 126 do
-    local char = string.char(i)
-    vim.keymap.set('n', char, function() update_search(char) end, map_opts)
+    -- Type to search (alphanumeric and symbols)
+    for i = 32, 126 do
+      local char = string.char(i)
+      -- Don't override navigation keys
+      if char ~= ' ' and char ~= 'j' and char ~= 'k' and char ~= 'q' then
+        vim.keymap.set('n', char, function() update_search(char) end, map_opts)
+      end
+    end
   end
 
   -- CRITICAL: Prevent insert mode
   vim.keymap.set('n', 'i', '<Nop>', map_opts)
   vim.keymap.set('n', 'I', '<Nop>', map_opts)
-  vim.keymap.set('n', 'a', function() update_search('a') end, map_opts)
-  vim.keymap.set('n', 'A', function() update_search('A') end, map_opts)
-  vim.keymap.set('n', 'o', function() update_search('o') end, map_opts)
-  vim.keymap.set('n', 'O', function() update_search('O') end, map_opts)
+
+  if not enable_search then
+    vim.keymap.set('n', 'a', '<Nop>', map_opts)
+    vim.keymap.set('n', 'A', '<Nop>', map_opts)
+  end
+
+  vim.keymap.set('n', 'o', '<Nop>', map_opts)
+  vim.keymap.set('n', 'O', '<Nop>', map_opts)
 end
 
 -- Modern input popup
