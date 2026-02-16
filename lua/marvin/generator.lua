@@ -6,8 +6,11 @@ local function create_popup(title, width, height)
 
   -- Calculate center position
   local ui = vim.api.nvim_list_uis()[1]
-  local win_width = math.floor(width * ui.width)
-  local win_height = math.floor(height * ui.height)
+
+  -- If width/height are numbers > 1, use them as absolute values
+  -- Otherwise treat as percentages
+  local win_width = width > 1 and width or math.floor(width * ui.width)
+  local win_height = height > 1 and height or math.floor(height * ui.height)
   local row = math.floor((ui.height - win_height) / 2)
   local col = math.floor((ui.width - win_width) / 2)
 
@@ -113,13 +116,10 @@ function M.show_archetype_wizard()
     selectable = true,
   })
 
-  -- Create popup
-  local buf, win = create_popup('🔨 Maven Project Generator', 0.7, 0.8)
-
-  -- Build content with better formatting
+  -- Build content first to calculate size
   local lines = {}
-  local selectable_lines = {} -- Track which lines are selectable
-  local line_to_item = {}     -- Map line numbers to archetype items
+  local selectable_lines = {}
+  local line_to_item = {}
 
   table.insert(lines, '')
   table.insert(lines, '  Create a new Maven project from an archetype')
@@ -129,7 +129,7 @@ function M.show_archetype_wizard()
     if archetype.type == 'header' then
       table.insert(lines, '')
       table.insert(lines, '  ' .. archetype.label)
-      table.insert(lines, '  ' .. string.rep('─', 64))
+      table.insert(lines, '  ' .. string.rep('─', 70))
     elseif archetype.type == 'separator' then
       table.insert(lines, '')
     elseif archetype.type == 'archetype' or archetype.type == 'action' then
@@ -141,7 +141,7 @@ function M.show_archetype_wizard()
       end
 
       if archetype.selectable then
-        table.insert(selectable_lines, line_num + 1) -- The line with icon and label
+        table.insert(selectable_lines, line_num + 1)
         line_to_item[line_num + 1] = archetype
       end
     end
@@ -149,9 +149,16 @@ function M.show_archetype_wizard()
 
   table.insert(lines, '')
   table.insert(lines, '')
-  table.insert(lines, '  ┌' .. string.rep('─', 64) .. '┐')
-  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc  │')
-  table.insert(lines, '  └' .. string.rep('─', 64) .. '┘')
+  table.insert(lines, '  ┌' .. string.rep('─', 70) .. '┐')
+  table.insert(lines, '  │  Navigation: ↑/↓ or j/k  │  Select: Enter  │  Quit: q/Esc    │')
+  table.insert(lines, '  └' .. string.rep('─', 70) .. '┘')
+
+  -- Calculate window size based on content
+  local content_width = 76 -- 70 + 6 for padding
+  local content_height = #lines
+
+  -- Create popup with fixed size
+  local buf, win = create_popup('🔨 Maven Project Generator', content_width, content_height)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
@@ -290,10 +297,8 @@ function M.show_local_archetypes()
 end
 
 function M.show_archetype_selection_list(archetypes, title)
-  local buf, win = create_popup('📦 ' .. title, 0.65, 0.75)
-
+  -- Build content first
   local lines = { '', '  Select an archetype:', '', '' }
-  local selectable_start = #lines + 1
 
   for i, archetype in ipairs(archetypes) do
     table.insert(lines, '    ' .. i .. '. ' .. archetype)
@@ -301,13 +306,20 @@ function M.show_archetype_selection_list(archetypes, title)
   end
 
   table.insert(lines, '')
-  table.insert(lines, '  ┌' .. string.rep('─', 56) .. '┐')
+  table.insert(lines, '  ┌' .. string.rep('─', 66) .. '┐')
   table.insert(lines, '  │  Use j/k or ↑/↓ to navigate  │  Enter to select  │  q to cancel  │')
-  table.insert(lines, '  └' .. string.rep('─', 56) .. '┘')
+  table.insert(lines, '  └' .. string.rep('─', 66) .. '┘')
+
+  -- Calculate size
+  local content_width = 72
+  local content_height = #lines
+
+  local buf, win = create_popup('📦 ' .. title, content_width, content_height)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
 
+  local selectable_start = 5 -- First archetype line
   local current_line = selectable_start
   local ns = vim.api.nvim_create_namespace('marvin_selection')
 
@@ -416,8 +428,6 @@ function M.show_custom_archetype_input()
 end
 
 function M.show_project_details_wizard(archetype)
-  local buf, win = create_popup('📝 Project Configuration', 0.75, 0.7)
-
   local details = {
     group_id = 'com.example',
     artifact_id = 'my-app',
@@ -433,6 +443,12 @@ function M.show_project_details_wizard(archetype)
   }
 
   local current_field = 1
+
+  -- Fixed window size
+  local content_width = 76
+  local content_height = 28
+
+  local buf, win = create_popup('📝 Project Configuration', content_width, content_height)
 
   local function render()
     local lines = {}
@@ -569,8 +585,6 @@ function M.show_project_details_wizard(archetype)
 end
 
 function M.show_directory_selector(callback)
-  local buf, win = create_popup('📁 Select Directory', 0.65, 0.45)
-
   local current_dir = vim.fn.getcwd()
   local home_dir = os.getenv('HOME') or os.getenv('USERPROFILE')
 
@@ -579,7 +593,7 @@ function M.show_directory_selector(callback)
     '  Where should the project be created?',
     '',
     '  ✨ Quick Options',
-    '  ' .. string.rep('─', 60),
+    '  ' .. string.rep('─', 66),
     '',
     '    1. Current Directory',
     '       ' .. current_dir,
@@ -591,10 +605,15 @@ function M.show_directory_selector(callback)
     '       Enter a custom directory path',
     '',
     '',
-    '  ┌' .. string.rep('─', 60) .. '┐',
+    '  ┌' .. string.rep('─', 66) .. '┐',
     '  │  1/2/3: Select option  │  c: Custom  │  Enter: Current  │  q: Cancel  │',
-    '  └' .. string.rep('─', 60) .. '┘',
+    '  └' .. string.rep('─', 66) .. '┘',
   }
+
+  local content_width = 72
+  local content_height = #lines
+
+  local buf, win = create_popup('📁 Select Directory', content_width, content_height)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
@@ -749,7 +768,23 @@ function M.generate(archetype, details, directory)
 end
 
 function M.show_generation_progress(artifact_id)
-  local buf, win = create_popup('🔨 Generating Project', 0.5, 0.35)
+  local lines = {
+    '',
+    '',
+    '    ⠋  Creating ' .. artifact_id .. '...',
+    '',
+    '    Maven is downloading dependencies and',
+    '    generating project structure.',
+    '',
+    '    Please wait...',
+    '',
+    '',
+  }
+
+  local content_width = 56
+  local content_height = #lines
+
+  local buf, win = create_popup('🔨 Generating Project', content_width, content_height)
 
   local frames = { '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' }
   local frame = 1
@@ -805,32 +840,35 @@ function M.on_generation_complete(details, directory)
 
   ui.notify('✅ Project generated successfully!', vim.log.levels.INFO)
 
-  local buf, win = create_popup('✅ Success!', 0.65, 0.5)
-
   local lines = {
     '',
     '',
     '    🎉 Project created successfully!',
     '',
     '  ✨ Project Details',
-    '  ' .. string.rep('─', 60),
+    '  ' .. string.rep('─', 66),
     '',
     '    Name:     ' .. details.artifact_id,
     '    Location: ' .. project_path,
     '    Package:  ' .. details.package,
     '',
     '  📝 Next Steps',
-    '  ' .. string.rep('─', 60),
+    '  ' .. string.rep('─', 66),
     '',
     '    • Press Enter to open the project',
     '    • Press o to open in file manager',
     '    • Press q to close this dialog',
     '',
     '',
-    '  ┌' .. string.rep('─', 60) .. '┐',
+    '  ┌' .. string.rep('─', 66) .. '┐',
     '  │  Enter: Open Project  │  o: File Manager  │  q: Close  │',
-    '  └' .. string.rep('─', 60) .. '┘',
+    '  └' .. string.rep('─', 66) .. '┘',
   }
+
+  local content_width = 72
+  local content_height = #lines
+
+  local buf, win = create_popup('✅ Success!', content_width, content_height)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
