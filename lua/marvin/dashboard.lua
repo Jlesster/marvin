@@ -42,30 +42,40 @@ end
 function M.show()
   local project = require('marvin.project')
 
-  -- Check if in Maven project
-  if not project.detect() then
-    vim.notify('Not in a Maven project', vim.log.levels.WARN)
-    return
-  end
+  -- Detect if in Maven project (but don't require it)
+  local in_maven_project = project.detect()
 
   local menu_items = {
     { type = 'header', label = '🚀 Project Actions' },
-    { type = 'action', id = 'new_project', label = 'Create New Project', icon = '📦', desc = 'Generate a new Maven project from archetype' },
-    { type = 'action', id = 'run_goal', label = 'Run Maven Goal', icon = '▶️', desc = 'Execute any Maven goal' },
-
-    { type = 'separator' },
-
-    { type = 'header', label = '📚 Add Dependencies' },
-    { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📄', desc = 'Add Jackson JSON library (2.18.2)' },
-    { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'Add LWJGL 3.3.6 with platform natives' },
-
-    { type = 'separator' },
-
-    { type = 'header', label = '🔧 Build Tools' },
-    { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Maven Assembly Plugin' },
-    { type = 'action', id = 'package', label = 'Package Project', icon = '📦', desc = 'Build project with mvn package' },
-    { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🧹', desc = 'Run mvn clean install' },
+    { type = 'action', id = 'new_project', label = 'Create New Maven Project', icon = '📦', desc = 'Generate a new Maven project from archetype' },
   }
+
+  -- Add Maven-specific actions if in a Maven project
+  if in_maven_project then
+    table.insert(menu_items,
+      { type = 'action', id = 'run_goal', label = 'Run Maven Goal', icon = '▶️', desc = 'Execute any Maven goal' })
+
+    table.insert(menu_items, { type = 'separator' })
+
+    table.insert(menu_items, { type = 'header', label = '📚 Add Dependencies' })
+    table.insert(menu_items,
+      { type = 'action', id = 'add_jackson', label = 'Add Jackson JSON', icon = '📄', desc =
+      'Add Jackson JSON library (2.18.2)' })
+    table.insert(menu_items,
+      { type = 'action', id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc =
+      'Add LWJGL 3.3.6 with platform natives' })
+
+    table.insert(menu_items, { type = 'separator' })
+
+    table.insert(menu_items, { type = 'header', label = '🔧 Build Tools' })
+    table.insert(menu_items,
+      { type = 'action', id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc =
+      'Add Maven Assembly Plugin' })
+    table.insert(menu_items,
+      { type = 'action', id = 'package', label = 'Package Project', icon = '📦', desc = 'Build project with mvn package' })
+    table.insert(menu_items,
+      { type = 'action', id = 'clean_install', label = 'Clean Install', icon = '🧹', desc = 'Run mvn clean install' })
+  end
 
   local lines = {}
   local selectable = {}
@@ -74,11 +84,17 @@ function M.show()
   table.insert(lines, '')
   table.insert(lines, '  ⚡ MARVIN - Maven for Neovim')
   table.insert(lines, '')
-  local proj_info = project.get_project()
-  if proj_info and proj_info.info then
-    table.insert(lines,
-      string.format('  Project: %s:%s', proj_info.info.group_id or 'unknown', proj_info.info.artifact_id or 'unknown'))
+
+  if in_maven_project then
+    local proj_info = project.get_project()
+    if proj_info and proj_info.info then
+      table.insert(lines,
+        string.format('  Project: %s:%s', proj_info.info.group_id or 'unknown', proj_info.info.artifact_id or 'unknown'))
+    end
+  else
+    table.insert(lines, '  📁 Not in a Maven project - Create a new one!')
   end
+
   table.insert(lines, '')
   table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
   table.insert(lines, '')
@@ -117,7 +133,7 @@ function M.show()
   for i, line in ipairs(lines) do
     if line:match('⚡ MARVIN') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
-    elseif line:match('Project:') then
+    elseif line:match('Project:') or line:match('📁') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'String', i - 1, 0, -1)
     elseif line:match('🚀') or line:match('📚') or line:match('🔧') then
       vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
