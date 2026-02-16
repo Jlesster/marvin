@@ -1,3 +1,47 @@
+local M = {}
+
+-- Get package from current file path
+function M.get_package_from_path()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  local project = require('marvin.project').get_project()
+
+  if not project then return nil end
+
+  -- Try to extract package from current Java file
+  if current_file:match('%.java$') then
+    local lines = vim.api.nvim_buf_get_lines(0, 0, 20, false)
+    for _, line in ipairs(lines) do
+      local package = line:match('^%s*package%s+([%w%.]+)')
+      if package then
+        return package
+      end
+    end
+  end
+
+  -- Try to extract from path
+  local src_main = current_file:match('/src/main/java/(.+)')
+  local src_test = current_file:match('/src/test/java/(.+)')
+  local src_path = src_main or src_test
+
+  if src_path then
+    local package = src_path:match('(.+)/[^/]+$')
+    if package then
+      return package:gsub('/', '.')
+    end
+  end
+
+  return nil
+end
+
+-- Get default package
+function M.get_default_package()
+  local project = require('marvin.project').get_project()
+  if project and project.info and project.info.group_id then
+    return project.info.group_id
+  end
+  return 'com.example'
+end
+
 -- Class template
 function M.class_template(name, package, options)
   options = options or {}
@@ -69,7 +113,6 @@ function M.interface_template(name, package, options)
     table.insert(lines, "")
   end
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -106,7 +149,6 @@ function M.enum_template(name, package, options)
     table.insert(lines, "")
   end
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -151,7 +193,6 @@ function M.record_template(name, package, options)
     table.insert(lines, "")
   end
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -182,6 +223,13 @@ function M.record_template(name, package, options)
   return lines
 end
 
+-- Abstract class template
+function M.abstract_class_template(name, package, options)
+  options = options or {}
+  options.modifier = "public abstract"
+  return M.class_template(name, package, options)
+end
+
 -- Exception template
 function M.exception_template(name, package, options)
   options = options or {}
@@ -195,7 +243,6 @@ function M.exception_template(name, package, options)
     table.insert(lines, "")
   end
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -250,7 +297,6 @@ function M.test_template(name, package, options)
     table.insert(lines, "")
   end
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -301,7 +347,6 @@ function M.builder_template(name, package, options)
     { type = "int",    name = "value", required = false }
   }
 
-  -- Get config setting for javadoc
   local config = require('marvin').config
   local enable_javadoc = config.java and config.java.enable_javadoc or false
 
@@ -373,3 +418,5 @@ function M.builder_template(name, package, options)
 
   return lines
 end
+
+return M
