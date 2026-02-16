@@ -51,29 +51,22 @@ function M.scan_local_archetypes()
   local home = os.getenv('HOME') or os.getenv('USERPROFILE')
   local m2_repo = home .. '/.m2/repository'
 
-  -- Find archetype-metadata.xml files (only in real archetypes)
-  local cmd = string.format('find "%s" -type f -name "archetype-metadata.xml" 2>/dev/null', m2_repo)
+  -- Try to find archetype JARs
+  local cmd = string.format('find "%s" -type f -name "*archetype*.jar" 2>/dev/null | grep -v "maven-archetype-plugin"',
+    m2_repo)
 
   local archetypes = {}
+  local seen = {}
 
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
     on_stdout = function(_, data, _)
       for _, line in ipairs(data) do
         if line and line ~= '' then
-          -- Parse: ~/.m2/repository/com/example/my-archetype/1.0/META-INF/maven/archetype-metadata.xml
+          -- Parse: ~/.m2/repository/org/jless/jless-schema-archetype/1.0/jless-schema-archetype-1.0.jar
           local parts = vim.split(line, '/')
 
-          -- Find META-INF
-          local meta_idx = nil
-          for i, part in ipairs(parts) do
-            if part == 'META-INF' then
-              meta_idx = i
-              break
-            end
-          end
-
-          -- Find repository
+          -- Find repository index
           local repo_idx = nil
           for i, part in ipairs(parts) do
             if part == 'repository' then
@@ -82,25 +75,31 @@ function M.scan_local_archetypes()
             end
           end
 
-          if meta_idx and repo_idx then
-            local version = parts[meta_idx - 1]
-            local artifact_id = parts[meta_idx - 2]
+          if repo_idx and #parts >= repo_idx + 3 then
+            local version = parts[#parts - 1]     -- The directory before the jar
+            local artifact_id = parts[#parts - 2] -- The directory before version
 
-            -- Build groupId
+            -- Build groupId from everything between repository and artifactId
             local group_parts = {}
-            for i = repo_idx + 1, meta_idx - 3 do
+            for i = repo_idx + 1, #parts - 3 do
               table.insert(group_parts, parts[i])
             end
             local group_id = table.concat(group_parts, '.')
 
             if group_id ~= '' and artifact_id ~= '' and version ~= '' then
-              table.insert(archetypes, {
-                group_id = group_id,
-                artifact_id = artifact_id,
-                version = version,
-                display = artifact_id .. ' (' .. version .. ')',
-                coordinates = group_id .. ':' .. artifact_id .. ':' .. version,
-              })
+              local key = group_id .. ':' .. artifact_id .. ':' .. version
+
+              if not seen[key] then
+                seen[key] = true
+                table.insert(archetypes, {
+                  group_id = group_id,
+                  artifact_id = artifact_id,
+                  version = version,
+                  display = artifact_id .. ' (' .. version .. ')',
+                  coordinates = key,
+                })
+                print('Found archetype: ' .. key)
+              end
             end
           end
         end
@@ -109,8 +108,10 @@ function M.scan_local_archetypes()
     on_exit = function()
       vim.schedule(function()
         if #archetypes == 0 then
-          ui.notify('No local archetypes found', vim.log.levels.WARN)
+          ui.notify('No local archetypes found in ' .. m2_repo, vim.log.levels.WARN)
+          print('No archetypes found. Check ~/.m2/repository')
         else
+          print('Total archetypes found: ' .. #archetypes)
           M.show_archetype_menu(archetypes)
         end
       end)
