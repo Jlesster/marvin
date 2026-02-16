@@ -92,6 +92,16 @@ function M.show()
 
     table.insert(menu_items, { type = 'header', label = '🔧 Build Tools' })
 
+    table.insert(menu_items,
+      {
+        type = 'action',
+        id = 'set_java_version',
+        label = 'Set Java Version',
+        icon = '☕',
+        desc =
+        'Configure Java compiler source/target version'
+      })
+
     -- Check if assembly plugin is already configured
     local has_assembly = has_assembly_plugin()
 
@@ -108,25 +118,13 @@ function M.show()
     end
 
     table.insert(menu_items,
-      {
-        type = 'action',
-        id = 'package',
-        label = 'Package Project (Regular JAR)',
-        icon = '📦',
-        desc =
-        'Build regular JAR with mvn package'
-      })
+      { type = 'action', id = 'package', label = 'Package Project (Regular JAR)', icon = '📦', desc =
+      'Build regular JAR with mvn package' })
 
     if has_assembly then
       table.insert(menu_items,
-        {
-          type = 'action',
-          id = 'package_fat',
-          label = 'Build Fat JAR',
-          icon = '🎯',
-          desc =
-          'Build executable JAR with all dependencies'
-        })
+        { type = 'action', id = 'package_fat', label = 'Build Fat JAR', icon = '🎯', desc =
+        'Build executable JAR with all dependencies' })
     end
 
     table.insert(menu_items,
@@ -277,6 +275,8 @@ function M.handle_action(action_id)
     require('marvin.dependencies').add_lwjgl()
   elseif action_id == 'add_assembly' then
     require('marvin.dependencies').add_assembly_plugin()
+  elseif action_id == 'set_java_version' then
+    M.prompt_java_version()
   elseif action_id == 'package' then
     require('marvin.executor').run('package')
   elseif action_id == 'package_fat' then
@@ -287,6 +287,7 @@ function M.handle_action(action_id)
   end
 end
 
+-- Prompt for Java version
 function M.prompt_java_version()
   local versions = {
     { version = '21', label = 'Java 21 (LTS)' },
