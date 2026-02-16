@@ -49,6 +49,13 @@ function M.setup(config)
       silent = true,
     })
   end
+
+  if keymaps.dashboard then
+    vim.keymap.set('n', keymaps.dashboard, ':MavenDashboard<CR>', {
+      desc = 'Open Marvin dashboard',
+      silent = true,
+    })
+  end
 end
 
 return M

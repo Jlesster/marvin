@@ -19,7 +19,8 @@ M.defaults = {
     test = '<leader>Mt',
     package = '<leader>Mp',
     install = '<leader>Mi',
-    new_project = '<leader>Mn', -- New keymap for project creation
+    new_project = '<leader>Mn',
+    dashboard = '<leader>Md', -- New dashboard keymap
   },
 
   archetypes = {
