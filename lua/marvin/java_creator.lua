@@ -113,6 +113,8 @@ function M.select_package(callback)
 
     -- Only switch to input mode when explicitly creating new package
     if choice.value == '__CREATE_NEW__' then
+      -- Ensure we're in normal mode first, then schedule input
+      vim.cmd('stopinsert')
       vim.schedule(function()
         ui.input({
           prompt = '📦 New Package Name',
@@ -126,8 +128,11 @@ function M.select_package(callback)
         end)
       end)
     else
-      -- For existing packages, return immediately (stays in normal mode)
-      callback(choice.value)
+      -- For existing packages, ensure normal mode before callback
+      vim.cmd('stopinsert')
+      vim.schedule(function()
+        callback(choice.value)
+      end)
     end
   end)
 end
@@ -289,15 +294,20 @@ function M.show_menu()
   local ui = require('marvin.ui')
 
   local types = {
-    { id = 'class', label = 'Java Class', icon = '☕', desc = 'Standard Java class' },
-    { id = 'class_main', label = 'Main Class', icon = '🚀', desc = 'Class with main method' },
-    { id = 'interface', label = 'Interface', icon = '📋', desc = 'Java interface' },
-    { id = 'enum', label = 'Enum', icon = '🔢', desc = 'Enumeration type' },
-    { id = 'record', label = 'Record', icon = '📦', desc = 'Java record (14+)' },
-    { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class' },
-    { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class' },
-    { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class' },
-    { id = 'builder', label = 'Builder Pattern', icon = '🗂️', desc = 'Class with builder pattern' },
+    { id = 'separator_basic', label = '──────────── Basic ────────────', is_separator = true },
+    { id = 'class', label = 'Java Class', icon = '☕', desc = 'Standard Java class', color = '@type' },
+    { id = 'class_main', label = 'Main Class', icon = '🚀', desc = 'Class with main method', color = '@keyword' },
+    { id = 'interface', label = 'Interface', icon = '📋', desc = 'Java interface', color = '@function' },
+    { id = 'enum', label = 'Enum', icon = '🔢', desc = 'Enumeration type', color = '@constant' },
+    { id = 'record', label = 'Record', icon = '📦', desc = 'Java record (14+)', color = '@type' },
+
+    { id = 'separator_advanced', label = '─────────── Advanced ───────────', is_separator = true },
+    { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class', color = '@type' },
+    { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class', color = 'DiagnosticError' },
+    { id = 'builder', label = 'Builder Pattern', icon = '🗂️', desc = 'Class with builder pattern', color = '@constructor' },
+
+    { id = 'separator_testing', label = '──────────── Testing ────────────', is_separator = true },
+    { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class', color = 'DiagnosticOk' },
   }
 
   ui.select(types, {

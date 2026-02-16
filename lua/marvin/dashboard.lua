@@ -1,38 +1,5 @@
 local M = {}
 
--- Modern popup creator (matches ui.lua style)
-local function create_popup(title, width, height)
-  local buf = vim.api.nvim_create_buf(false, true)
-  local ui = vim.api.nvim_list_uis()[1]
-
-  local win_width = width > 1 and width or math.floor(width * ui.width)
-  local win_height = height > 1 and height or math.floor(height * ui.height)
-  local row = math.floor((ui.height - win_height) / 2)
-  local col = math.floor((ui.width - win_width) / 2)
-
-  local opts = {
-    relative = 'editor',
-    width = win_width,
-    height = win_height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = 'rounded',
-    title = title and { { ' ' .. title .. ' ', 'FloatTitle' } } or nil,
-    title_pos = 'center',
-  }
-
-  local win = vim.api.nvim_open_win(buf, true, opts)
-
-  vim.api.nvim_set_option_value('winhl', 'Normal:NormalFloat,FloatBorder:FloatBorder', { win = win })
-  vim.api.nvim_set_option_value('cursorline', true, { win = win })
-  vim.api.nvim_set_option_value('wrap', false, { win = win })
-  vim.api.nvim_set_option_value('number', false, { win = win })
-  vim.api.nvim_set_option_value('relativenumber', false, { win = win })
-
-  return buf, win
-end
-
 -- Check if assembly plugin is configured
 local function has_assembly_plugin()
   local pom_path = vim.fn.getcwd() .. '/pom.xml'
@@ -51,30 +18,43 @@ function M.show()
 
   -- Build menu items with consistent structure (like other menus)
   local menu_items = {
-    { id = 'new_project', label = 'Create New Maven Project', icon = '🗂️', desc = 'Generate project from archetype' },
-    { id = 'new_java_file', label = 'Create Java File', icon = '☕', desc = 'Class, interface, enum, etc.' },
+    { id = 'separator_general', label = '─────────── General ───────────', is_separator = true },
+    { id = 'new_project', label = 'Create New Maven Project', icon = '🗂️', desc = 'Generate project from archetype', color = 'DiagnosticInfo' },
+    { id = 'new_java_file', label = 'Create Java File', icon = '☕', desc = 'Class, interface, enum, etc.', color = 'DiagnosticWarn' },
   }
 
   if in_maven_project then
-    table.insert(menu_items, { id = 'run_goal', label = 'Run Maven Goal', icon = '🎯', desc = 'Execute any Maven goal' })
-    table.insert(menu_items, { id = 'add_jackson', label = 'Add Jackson JSON', icon = '📋', desc = 'Jackson 2.18.2' })
-    table.insert(menu_items, { id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'LWJGL 3.3.6 + natives' })
+    table.insert(menu_items, { id = 'separator_build', label = '──────────── Build ────────────', is_separator = true })
     table.insert(menu_items,
-      { id = 'set_java_version', label = 'Set Java Version', icon = '☕', desc = 'Configure compiler version' })
-
-    if not has_assembly_plugin() then
-      table.insert(menu_items,
-        { id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Assembly Plugin' })
-    end
-
-    table.insert(menu_items, { id = 'package', label = 'Package Project', icon = '📦', desc = 'Build regular JAR' })
+      { id = 'run_goal', label = 'Run Maven Goal', icon = '🎯', desc = 'Execute any Maven goal', color = 'DiagnosticOk' })
+    table.insert(menu_items,
+      { id = 'package', label = 'Package Project', icon = '📦', desc = 'Build regular JAR', color = '@keyword' })
 
     if has_assembly_plugin() then
       table.insert(menu_items,
-        { id = 'package_fat', label = 'Build Fat JAR', icon = '🎁', desc = 'JAR with dependencies' })
+        { id = 'package_fat', label = 'Build Fat JAR', icon = '🎁', desc = 'JAR with dependencies', color = '@keyword' })
     end
 
-    table.insert(menu_items, { id = 'clean_install', label = 'Clean Install', icon = '🔄', desc = 'Clean and install' })
+    table.insert(menu_items,
+      { id = 'clean_install', label = 'Clean Install', icon = '🔄', desc = 'Clean and install', color = 'DiagnosticHint' })
+
+    table.insert(menu_items, { id = 'separator_deps', label = '────────── Dependencies ──────────', is_separator = true })
+    table.insert(menu_items,
+      { id = 'add_jackson', label = 'Add Jackson JSON', icon = '📋', desc = 'Jackson 2.18.2', color = '@string' })
+    table.insert(menu_items,
+      { id = 'add_lwjgl', label = 'Add LWJGL', icon = '🎮', desc = 'LWJGL 3.3.6 + natives', color = '@string' })
+
+    table.insert(menu_items,
+      { id = 'separator_config', label = '───────── Configuration ─────────', is_separator = true })
+    table.insert(menu_items,
+      { id = 'set_java_version', label = 'Set Java Version', icon = '☕', desc = 'Configure compiler version', color =
+      '@variable' })
+
+    if not has_assembly_plugin() then
+      table.insert(menu_items,
+        { id = 'add_assembly', label = 'Setup Fat JAR Build', icon = '📦', desc = 'Add Assembly Plugin', color =
+        '@variable' })
+    end
   end
 
   -- Use the standard UI select (matches other menus)
