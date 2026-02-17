@@ -1,6 +1,6 @@
 local M = {}
 
--- Scan for packages in project (all directories under src)
+-- Scan for packages in project with metadata
 local function scan_packages()
   local project = require('marvin.project').get_project()
 
@@ -10,26 +10,33 @@ local function scan_packages()
 
   local packages = {}
   local src_paths = {
-    project.root .. '/src/main/java',
-    project.root .. '/src/test/java',
+    { path = project.root .. '/src/main/java', type = 'main' },
+    { path = project.root .. '/src/test/java', type = 'test' },
   }
 
-  for _, src_path in ipairs(src_paths) do
-    if vim.fn.isdirectory(src_path) == 1 then
-      -- Use find to get all directories, excluding hidden ones
-      local cmd = string.format('find "%s" -type d -not -path "*/\\.*" 2>/dev/null', src_path)
+  for _, src_info in ipairs(src_paths) do
+    if vim.fn.isdirectory(src_info.path) == 1 then
+      local cmd = string.format('find "%s" -type d -not -path "*/\\.*" 2>/dev/null', src_info.path)
       local handle = io.popen(cmd)
 
       if handle then
         for dir in handle:lines() do
-          -- Skip the base source directory itself
-          if dir ~= src_path then
-            -- Convert path to package name
-            local package = dir:gsub(vim.pesc(src_path) .. '/', ''):gsub('/', '.')
+          if dir ~= src_info.path then
+            local package = dir:gsub(vim.pesc(src_info.path) .. '/', ''):gsub('/', '.')
 
-            -- Only requirement: not empty and not already added
-            if package ~= '' and not packages[package] then
-              packages[package] = true
+            if package ~= '' then
+              if not packages[package] then
+                packages[package] = {
+                  name = package,
+                  types = {},
+                  file_count = 0,
+                }
+              end
+              packages[package].types[src_info.type] = true
+
+              -- Count Java files
+              local java_files = vim.fn.glob(dir .. '/*.java', false, true)
+              packages[package].file_count = packages[package].file_count + #java_files
             end
           end
         end
@@ -40,17 +47,17 @@ local function scan_packages()
 
   -- Convert to array and sort
   local package_list = {}
-  for pkg, _ in pairs(packages) do
-    table.insert(package_list, pkg)
+  for _, pkg_info in pairs(packages) do
+    table.insert(package_list, pkg_info)
   end
 
   -- Sort: parent packages first, then alphabetically
   table.sort(package_list, function(a, b)
-    local a_depth = select(2, a:gsub('%.', '.'))
-    local b_depth = select(2, b:gsub('%.', '.'))
+    local a_depth = select(2, a.name:gsub('%.', '.'))
+    local b_depth = select(2, b.name:gsub('%.', '.'))
 
     if a_depth == b_depth then
-      return a < b
+      return a.name < b.name
     end
     return a_depth < b_depth
   end)
@@ -58,7 +65,12 @@ local function scan_packages()
   return package_list
 end
 
--- FIXED: Create package selector that stays in normal mode
+-- Get package hierarchy depth
+local function get_package_depth(package_name)
+  return select(2, package_name:gsub('%.', '.'))
+end
+
+-- Enhanced package selector with visual hierarchy
 function M.select_package(callback, on_back)
   local templates = require('marvin.templates')
   local ui = require('marvin.ui')
@@ -67,42 +79,149 @@ function M.select_package(callback, on_back)
   local current_package = templates.get_package_from_path()
   local default_package = current_package or templates.get_default_package()
 
-  -- Build package items for select menu
   local package_items = {}
 
-  -- Add current/default at top
+  -- ===== SECTION: Current/Suggested =====
   table.insert(package_items, {
-    value = default_package,
-    label = default_package,
-    icon = '📁',
-    desc = 'Default package'
+    id = 'separator_current',
+    label = 'Current Location',
+    is_separator = true
   })
 
-  -- Add new package option
+  if current_package then
+    table.insert(package_items, {
+      value = current_package,
+      label = current_package,
+      icon = '📍',
+      desc = 'Current file location',
+      shortcut = 'c'
+    })
+  end
+
+  if default_package ~= current_package then
+    table.insert(package_items, {
+      value = default_package,
+      label = default_package,
+      icon = '🏠',
+      desc = 'Project default package',
+      shortcut = 'd'
+    })
+  end
+
+  -- ===== SECTION: Quick Actions =====
+  table.insert(package_items, {
+    id = 'separator_actions',
+    label = 'Quick Actions',
+    is_separator = true
+  })
+
   table.insert(package_items, {
     value = '__CREATE_NEW__',
     label = 'Create New Package',
     icon = '✨',
-    desc = 'Enter custom package name'
+    desc = 'Enter custom package name',
+    shortcut = 'n'
   })
 
-  -- Add existing packages
+  -- Suggest creating a subpackage of current location
+  if current_package then
+    table.insert(package_items, {
+      value = '__CREATE_SUB__',
+      label = 'Create Subpackage',
+      icon = '📁',
+      desc = 'Create under ' .. current_package,
+      shortcut = 's'
+    })
+  end
+
+  -- ===== SECTION: Existing Packages by Hierarchy =====
   if #packages > 0 then
-    for _, pkg in ipairs(packages) do
-      if pkg ~= default_package then
+    -- Group packages by depth
+    local root_packages = {}
+    local sub_packages = {}
+
+    for _, pkg_info in ipairs(packages) do
+      local depth = get_package_depth(pkg_info.name)
+
+      -- Skip current and default as they're already shown
+      if pkg_info.name ~= current_package and pkg_info.name ~= default_package then
+        if depth == 0 then
+          table.insert(root_packages, pkg_info)
+        else
+          table.insert(sub_packages, pkg_info)
+        end
+      end
+    end
+
+    -- Root packages
+    if #root_packages > 0 then
+      table.insert(package_items, {
+        id = 'separator_root',
+        label = 'Root Packages',
+        is_separator = true
+      })
+
+      for _, pkg_info in ipairs(root_packages) do
+        local type_indicator = ''
+        if pkg_info.types.main and pkg_info.types.test then
+          type_indicator = 'main + test'
+        elseif pkg_info.types.main then
+          type_indicator = 'main'
+        elseif pkg_info.types.test then
+          type_indicator = 'test'
+        end
+
         table.insert(package_items, {
-          value = pkg,
-          label = pkg,
-          desc = 'Existing package'
+          value = pkg_info.name,
+          label = pkg_info.name,
+          icon = '📦',
+          desc = string.format('%d files • %s', pkg_info.file_count, type_indicator)
+        })
+      end
+    end
+
+    -- Subpackages
+    if #sub_packages > 0 then
+      table.insert(package_items, {
+        id = 'separator_sub',
+        label = 'Subpackages',
+        is_separator = true
+      })
+
+      for _, pkg_info in ipairs(sub_packages) do
+        local depth = get_package_depth(pkg_info.name)
+        local indent = string.rep('  ', depth - 1)
+
+        local type_indicator = ''
+        if pkg_info.types.main and pkg_info.types.test then
+          type_indicator = 'main + test'
+        elseif pkg_info.types.main then
+          type_indicator = 'main'
+        elseif pkg_info.types.test then
+          type_indicator = 'test'
+        end
+
+        -- Get the last segment for display
+        local segments = {}
+        for segment in pkg_info.name:gmatch('[^.]+') do
+          table.insert(segments, segment)
+        end
+        local display_name = segments[#segments]
+
+        table.insert(package_items, {
+          value = pkg_info.name,
+          label = indent .. '└─ ' .. display_name,
+          icon = '📂',
+          desc = string.format('%s • %d files', type_indicator, pkg_info.file_count)
         })
       end
     end
   end
 
-  -- Use select which stays in normal mode
+  -- Show the selector
   ui.select(package_items, {
-    prompt = '📦 Select Package',
-    enable_search = true, -- Enable search for package selector
+    prompt = 'Select Package',
+    enable_search = true,
     on_back = on_back,
     format_item = function(item)
       return item.label
@@ -113,13 +232,11 @@ function M.select_package(callback, on_back)
       return
     end
 
-    -- Only switch to input mode when explicitly creating new package
     if choice.value == '__CREATE_NEW__' then
-      -- Ensure we're in normal mode first, then schedule input
       vim.cmd('stopinsert')
       vim.schedule(function()
         ui.input({
-          prompt = '📦 New Package Name',
+          prompt = 'New Package Name',
           default = default_package,
         }, function(new_package)
           if new_package and new_package ~= '' then
@@ -129,8 +246,21 @@ function M.select_package(callback, on_back)
           end
         end)
       end)
+    elseif choice.value == '__CREATE_SUB__' then
+      vim.cmd('stopinsert')
+      vim.schedule(function()
+        ui.input({
+          prompt = 'Subpackage Name',
+          default = current_package .. '.',
+        }, function(new_package)
+          if new_package and new_package ~= '' then
+            callback(new_package)
+          else
+            callback(nil)
+          end
+        end)
+      end)
     else
-      -- For existing packages, ensure normal mode before callback
       vim.cmd('stopinsert')
       vim.schedule(function()
         callback(choice.value)
@@ -300,24 +430,96 @@ function M.show_menu(on_back)
   local ui = require('marvin.ui')
 
   local types = {
-    { id = 'separator_basic', label = '──────────── Basic ────────────', is_separator = true },
-    { id = 'class', label = 'Java Class', icon = '☕', desc = 'Standard Java class', color = '@type' },
-    { id = 'class_main', label = 'Main Class', icon = '🚀', desc = 'Class with main method', color = '@keyword' },
-    { id = 'interface', label = 'Interface', icon = '📋', desc = 'Java interface', color = '@function' },
-    { id = 'enum', label = 'Enum', icon = '🔢', desc = 'Enumeration type', color = '@constant' },
-    { id = 'record', label = 'Record', icon = '📦', desc = 'Java record (14+)', color = '@type' },
+    {
+      id = 'separator_common',
+      label = 'Common Types',
+      is_separator = true
+    },
+    {
+      id = 'class',
+      label = 'Java Class',
+      icon = '☕',
+      desc = 'Standard class with fields and methods',
+      shortcut = 'c'
+    },
+    {
+      id = 'class_main',
+      label = 'Main Class',
+      icon = '🚀',
+      desc = 'Executable class with main() method',
+      shortcut = 'm'
+    },
+    {
+      id = 'interface',
+      label = 'Interface',
+      icon = '📋',
+      desc = 'Contract definition for classes',
+      shortcut = 'i'
+    },
+    {
+      id = 'enum',
+      label = 'Enum',
+      icon = '🔢',
+      desc = 'Type-safe enumeration of constants',
+      shortcut = 'e'
+    },
+    {
+      id = 'record',
+      label = 'Record',
+      icon = '📦',
+      desc = 'Immutable data carrier (Java 14+)',
+      shortcut = 'r'
+    },
 
-    { id = 'separator_advanced', label = '─────────── Advanced ───────────', is_separator = true },
-    { id = 'abstract', label = 'Abstract Class', icon = '🎨', desc = 'Abstract class', color = '@type' },
-    { id = 'exception', label = 'Exception', icon = '❌', desc = 'Custom exception class', color = 'DiagnosticError' },
-    { id = 'builder', label = 'Builder Pattern', icon = '🗂️', desc = 'Class with builder pattern', color = '@constructor' },
+    {
+      id = 'separator_patterns',
+      label = 'Design Patterns',
+      is_separator = true
+    },
+    {
+      id = 'builder',
+      label = 'Builder Pattern',
+      icon = '🏗️',
+      desc = 'Fluent API for object construction',
+      shortcut = 'b'
+    },
 
-    { id = 'separator_testing', label = '──────────── Testing ────────────', is_separator = true },
-    { id = 'test', label = 'JUnit Test', icon = '🧪', desc = 'JUnit test class', color = 'DiagnosticOk' },
+    {
+      id = 'separator_advanced',
+      label = 'Advanced',
+      is_separator = true
+    },
+    {
+      id = 'abstract',
+      label = 'Abstract Class',
+      icon = '🎨',
+      desc = 'Partial implementation base class',
+      shortcut = 'a'
+    },
+    {
+      id = 'exception',
+      label = 'Custom Exception',
+      icon = '❌',
+      desc = 'Custom error type',
+      shortcut = 'x'
+    },
+
+    {
+      id = 'separator_testing',
+      label = 'Testing',
+      is_separator = true
+    },
+    {
+      id = 'test',
+      label = 'JUnit Test',
+      icon = '🧪',
+      desc = 'JUnit 5 test class',
+      shortcut = 't'
+    },
   }
 
   ui.select(types, {
-    prompt = '☕ Create Java File',
+    prompt = 'Create Java File',
     on_back = on_back,
   }, function(choice)
     if not choice then return end
@@ -344,7 +546,7 @@ function M.show_menu(on_back)
           options.fields = fields
           M.create_file_interactive('Record', options, on_back)
         end
-      end, '📦 Record Fields (Type name, ...)')
+      end, 'Record Fields (Type name, Type name, ...)')
     elseif choice.id == 'abstract' then
       M.create_file_interactive('Abstract Class', options, on_back)
     elseif choice.id == 'exception' then
@@ -360,7 +562,7 @@ function M.show_menu(on_back)
           options.fields = fields
           M.create_file_interactive('Builder', options, on_back)
         end
-      end, '🗂️ Builder Fields (Type name, ...)')
+      end, 'Builder Fields (Type name, Type name, ...)')
     end
   end)
 end

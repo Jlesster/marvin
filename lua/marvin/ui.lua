@@ -2,6 +2,20 @@ local M = {}
 
 M.backend = nil
 
+-- Define custom highlight groups for the modern UI
+local function setup_highlights()
+  vim.api.nvim_set_hl(0, 'MarvinSelected', { bg = '#9370db', fg = '#ffffff', bold = true })
+  vim.api.nvim_set_hl(0, 'MarvinNormal', { bg = '#1e1e2e', fg = '#cdd6f4' })
+  vim.api.nvim_set_hl(0, 'MarvinBorder', { fg = '#6c7086' })
+  vim.api.nvim_set_hl(0, 'MarvinTitle', { fg = '#cba6f7', bold = true })
+  vim.api.nvim_set_hl(0, 'MarvinIcon', { fg = '#f5c2e7' })
+  vim.api.nvim_set_hl(0, 'MarvinDesc', { fg = '#6c7086' })
+  vim.api.nvim_set_hl(0, 'MarvinSeparator', { fg = '#45475a' })
+  vim.api.nvim_set_hl(0, 'MarvinSearch', { fg = '#89dceb', italic = true })
+  vim.api.nvim_set_hl(0, 'MarvinCounter', { fg = '#94e2d5' })
+end
+
+
 function M.init()
   local config = require('marvin').config
   if config.ui_backend == 'auto' then
@@ -9,6 +23,9 @@ function M.init()
   else
     M.backend = config.ui_backend
   end
+
+  -- Setup custom highlights
+  setup_highlights()
 end
 
 function M.detect_backend()
@@ -39,16 +56,16 @@ local function create_popup(title, width, height, opts)
     row = row,
     col = col,
     style = 'minimal',
-    border = 'rounded',
+    border = { '╭', '─', '╮', '│', '╯', '─', '╰', '│' },
     title = title and { { ' ' .. title .. ' ', 'FloatTitle' } } or nil,
-    title_pos = 'center',
+    title_pos = 'left',
   }
 
   local win = vim.api.nvim_open_win(buf, true, win_opts)
 
   -- Modern styling
-  vim.api.nvim_set_option_value('winhl', 'Normal:NormalFloat,FloatBorder:FloatBorder', { win = win })
-  vim.api.nvim_set_option_value('cursorline', true, { win = win })
+  vim.api.nvim_set_option_value('winhl', 'Normal:MarvinNormal,FloatBorder:MarvinBorder', { win = win })
+  vim.api.nvim_set_option_value('cursorline', false, { win = win })
   vim.api.nvim_set_option_value('wrap', false, { win = win })
   vim.api.nvim_set_option_value('number', false, { win = win })
   vim.api.nvim_set_option_value('relativenumber', false, { win = win })
@@ -177,7 +194,7 @@ function M.popup_select(items, opts, callback)
 
   -- Create window with dynamic height
   local win_height = calculate_window_height()
-  local buf, win = create_popup('🔍 ' .. prompt, 80, win_height)
+  local buf, win = create_popup(prompt, 80, win_height)
 
   -- Calculate max label width for alignment
   local function calculate_max_label_width()
@@ -204,13 +221,13 @@ function M.popup_select(items, opts, callback)
     if enable_search then
       -- Search bar
       table.insert(lines, '')
-      local search_display = search_term == '' and '  Type to search...' or '  ' .. search_term .. '▮'
+      local search_display = search_term == '' and '  _' or '  ' .. search_term .. '_'
       table.insert(lines, search_display)
       table.insert(highlights,
         { line = #lines - 1, hl_group = search_term == '' and 'Comment' or '@string', col_start = 0, col_end = -1 })
 
       table.insert(lines, '  ' .. string.rep('─', 76))
-      table.insert(highlights, { line = #lines - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+      table.insert(highlights, { line = #lines - 1, hl_group = 'MarvinSeparator', col_start = 0, col_end = -1 })
     else
       table.insert(lines, '')
     end
@@ -231,7 +248,7 @@ function M.popup_select(items, opts, callback)
         if formatted.is_separator then
           -- Separator rendering - full width
           table.insert(lines, string.rep('─', 78))
-          table.insert(highlights, { line = line_num - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+          table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinSeparator', col_start = 0, col_end = -1 })
 
           -- Add separator text centered
           if formatted.display and formatted.display ~= '' then
@@ -243,13 +260,13 @@ function M.popup_select(items, opts, callback)
 
             -- Replace part of the line with text
             lines[#lines] = string.rep('─', start_pos) .. sep_text .. string.rep('─', 78 - start_pos - text_width)
-            table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+            table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinDesc', col_start = 0, col_end = -1 })
           end
         else
           local is_selected = i == current_idx
 
           -- Selection indicator
-          local indicator = is_selected and '▶ ' or '  '
+          local indicator = is_selected and '» ' or '  '
           local icon_str = formatted.icon and (formatted.icon .. ' ') or ''
           local label_part = indicator .. icon_str .. formatted.display
 
@@ -270,14 +287,15 @@ function M.popup_select(items, opts, callback)
 
             -- Highlight selected item
             if is_selected then
-              table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
-              table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
+              table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinSelected', col_start = 0, col_end = -1 })
+              table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinIcon', col_start = 0, col_end = 2 })
             else
               table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
             end
 
             -- Highlight description
-            table.insert(highlights, { line = line_num - 1, hl_group = 'Comment', col_start = align_col, col_end = -1 })
+            table.insert(highlights,
+              { line = line_num - 1, hl_group = 'MarvinDesc', col_start = align_col, col_end = -1 })
           else
             -- No description - just the label
             table.insert(lines, label_part)
@@ -286,8 +304,8 @@ function M.popup_select(items, opts, callback)
 
             -- Highlight selected item
             if is_selected then
-              table.insert(highlights, { line = line_num - 1, hl_group = 'CursorLine', col_start = 0, col_end = -1 })
-              table.insert(highlights, { line = line_num - 1, hl_group = '@keyword', col_start = 0, col_end = 2 })
+              table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinSelected', col_start = 0, col_end = -1 })
+              table.insert(highlights, { line = line_num - 1, hl_group = 'MarvinIcon', col_start = 0, col_end = 2 })
             else
               table.insert(highlights, { line = line_num - 1, hl_group = 'Normal', col_start = 0, col_end = -1 })
             end
@@ -301,14 +319,14 @@ function M.popup_select(items, opts, callback)
     -- Footer
     table.insert(lines, '')
     table.insert(lines, '  ' .. string.rep('─', 76))
-    table.insert(highlights, { line = #lines - 1, hl_group = 'FloatBorder', col_start = 0, col_end = -1 })
+    table.insert(highlights, { line = #lines - 1, hl_group = 'MarvinSeparator', col_start = 0, col_end = -1 })
 
     local count_text = string.format('  %d/%d items', #filtered_items, #formatted_items)
     table.insert(lines, count_text)
-    table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+    table.insert(highlights, { line = #lines - 1, hl_group = 'MarvinDesc', col_start = 0, col_end = -1 })
 
     table.insert(lines, '  ↑↓ Navigate │ Enter Select │ Esc Cancel' .. (on_back and ' │ ⌫ Back' or ''))
-    table.insert(highlights, { line = #lines - 1, hl_group = 'Comment', col_start = 0, col_end = -1 })
+    table.insert(highlights, { line = #lines - 1, hl_group = 'MarvinDesc', col_start = 0, col_end = -1 })
     table.insert(lines, '')
 
     return lines, selectable, item_map, highlights
@@ -494,7 +512,7 @@ function M.popup_input(opts, callback)
   local default = opts.default or ''
   local width = opts.width or 60
 
-  local buf, win = create_popup('✏️  ' .. prompt, width, 5)
+  local buf, win = create_popup(prompt, width, 5)
 
   -- Create input line
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
@@ -502,7 +520,7 @@ function M.popup_input(opts, callback)
     '',
     '  ' .. default,
     '',
-    '  Enter to confirm │ Esc to cancel',
+    '  <CR> confirm  │  Esc cancel',
     ''
   })
 
@@ -623,18 +641,148 @@ end
 
 function M.get_common_goals()
   return {
-    { goal = 'clean', label = 'Clean', icon = '🧹', desc = 'Remove target directory' },
-    { goal = 'compile', label = 'Compile', icon = '🔨', desc = 'Compile source code' },
-    { goal = 'test', label = 'Test', icon = '🧪', desc = 'Run unit tests' },
-    { goal = 'test -DskipTests', label = 'Test (skip)', icon = '⏭️', desc = 'Skip running tests' },
-    { goal = 'package', label = 'Package', icon = '📦', desc = 'Create JAR/WAR file' },
-    { goal = 'install', label = 'Install', icon = '💾', desc = 'Install to local repo' },
-    { goal = 'verify', label = 'Verify', icon = '✅', desc = 'Run integration tests' },
-    { goal = 'clean install', label = 'Clean + Install', icon = '🔄', desc = 'Clean and install' },
-    { goal = 'dependency:tree', label = 'Dependency Tree', icon = '🌳', desc = 'Show dependency tree' },
-    { goal = 'dependency:resolve', label = 'Resolve Dependencies', icon = '📥', desc = 'Download dependencies' },
-    { goal = 'help:effective-pom', label = 'Effective POM', icon = '📄', desc = 'Show effective POM' },
-    { goal = nil, label = 'Custom Goal...', icon = '⚙️', desc = 'Enter custom Maven goal', needs_options = true },
+    {
+      id = 'separator_build',
+      label = 'Build Lifecycle',
+      is_separator = true
+    },
+    {
+      goal = 'clean',
+      label = 'Clean',
+      icon = '🧹',
+      desc = 'Delete target/ directory',
+      shortcut = 'c'
+    },
+    {
+      goal = 'compile',
+      label = 'Compile',
+      icon = '⚙️',
+      desc = 'Compile source code',
+      shortcut = 'C'
+    },
+    {
+      goal = 'test',
+      label = 'Test',
+      icon = '🧪',
+      desc = 'Run unit tests',
+      shortcut = 't'
+    },
+    {
+      goal = 'package',
+      label = 'Package',
+      icon = '📦',
+      desc = 'Create JAR/WAR file',
+      shortcut = 'p'
+    },
+    {
+      goal = 'verify',
+      label = 'Verify',
+      icon = '✅',
+      desc = 'Run integration tests',
+      shortcut = 'v'
+    },
+    {
+      goal = 'install',
+      label = 'Install',
+      icon = '💾',
+      desc = 'Install to ~/.m2/repository',
+      shortcut = 'i'
+    },
+
+    {
+      id = 'separator_common',
+      label = 'Common Tasks',
+      is_separator = true
+    },
+    {
+      goal = 'clean install',
+      label = 'Clean & Install',
+      icon = '🔄',
+      desc = 'Full rebuild and install',
+      shortcut = 'I'
+    },
+    {
+      goal = 'clean package',
+      label = 'Clean & Package',
+      icon = '📦',
+      desc = 'Fresh build to JAR',
+      shortcut = 'P'
+    },
+    {
+      goal = 'test -DskipTests',
+      label = 'Skip Tests',
+      icon = '⏭️',
+      desc = 'Build without running tests',
+      shortcut = 's'
+    },
+
+    {
+      id = 'separator_deps',
+      label = 'Dependencies',
+      is_separator = true
+    },
+    {
+      goal = 'dependency:tree',
+      label = 'Dependency Tree',
+      icon = '🌳',
+      desc = 'Show full dependency graph',
+      shortcut = 'd'
+    },
+    {
+      goal = 'dependency:resolve',
+      label = 'Resolve Dependencies',
+      icon = '📥',
+      desc = 'Download all dependencies',
+      shortcut = 'r'
+    },
+    {
+      goal = 'dependency:analyze',
+      label = 'Analyze Dependencies',
+      icon = '🔍',
+      desc = 'Find unused/undeclared deps',
+      shortcut = 'a'
+    },
+    {
+      goal = 'versions:display-dependency-updates',
+      label = 'Check for Updates',
+      icon = '🆙',
+      desc = 'Find newer dependency versions',
+      shortcut = 'u'
+    },
+
+    {
+      id = 'separator_info',
+      label = 'Information',
+      is_separator = true
+    },
+    {
+      goal = 'help:effective-pom',
+      label = 'Effective POM',
+      icon = '📄',
+      desc = 'Show resolved configuration',
+      shortcut = 'e'
+    },
+    {
+      goal = 'help:effective-settings',
+      label = 'Effective Settings',
+      icon = '⚙️',
+      desc = 'Show Maven settings',
+      shortcut = 'S'
+    },
+
+    {
+      id = 'separator_custom',
+      label = 'Custom',
+      is_separator = true
+    },
+    {
+      goal = nil,
+      label = 'Custom Goal',
+      icon = '⚡',
+      desc = 'Enter any Maven command',
+      needs_options = true,
+      shortcut = 'g'
+    },
   }
 end
 
