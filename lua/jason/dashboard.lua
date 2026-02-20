@@ -60,76 +60,53 @@ function M.build_menu(project)
   -- ── Core: Run ─────────────────────────────────────────────────────────────
   add(sep('Run'))
   add(item('build_run', '▶', 'Build & Run', 'Compile then execute', status_badge('build_run')))
-  add(item('build_run_args', '▶', 'Build & Run…', 'Prompt for run args'))
-  add(item('run', '󰐊', 'Run Only', 'Execute without building', status_badge('run')))
-  add(item('run_args', '󰐊', 'Run with args…', 'Prompt for arguments'))
+  add(item('run', '󰐊', 'Run', 'Execute without building', status_badge('run')))
   add(item('test', '󰙨', 'Test', 'Run full test suite', status_badge('test')))
-  add(item('test_filter', '󰙨', 'Test (filter)…', 'Run matching tests only'))
+  add(item('run_submenu', '󰒓', 'Run Options…', 'Args, filter, build+run w/ args'))
 
   -- ── Core: Build ───────────────────────────────────────────────────────────
   add(sep('Build'))
   add(item('build', '󰔷', 'Build', 'Compile sources', status_badge('build')))
-  add(item('build_args', '󰔷', 'Build with args…', 'Pass extra flags'))
   add(item('clean_build', '󰑕', 'Clean & Build', 'Wipe artifacts then compile'))
-  add(item('clean', '󰃢', 'Clean', 'Remove build artifacts'))
-  add(item('package', '󰏗', 'Package', 'Build distributable output'))
-  add(item('install', '󰇚', 'Install', 'Install to system / local repo'))
+  add(item('build_submenu', '󰒓', 'Build Options…', 'Package, install, skip tests, more'))
 
-  -- ── Core: Quality ─────────────────────────────────────────────────────────
+  -- ── Quality ───────────────────────────────────────────────────────────────
   add(sep('Quality'))
   add(item('fmt', '󰉣', 'Format', 'Auto-format all source files'))
   add(item('lint', '󰁨', 'Lint', 'Run linter / static analysis'))
   add(item('quality_submenu', '󰦉', 'More…', 'Coverage, audit, vet…'))
 
-  -- ── Language tools ────────────────────────────────────────────────────────
+  -- ── Language-specific ─────────────────────────────────────────────────────
   if lang == 'rust' then
     add(sep('Rust'))
     add(item('check', '󰄬', 'Check', 'Type-check without codegen'))
-    add(item('doc', '󰈙', 'Docs', 'cargo doc --open'))
-    add(item('bench', '󰦉', 'Bench', 'Run benchmarks'))
-    add(item('expand', '󰈙', 'Expand Macros', 'cargo expand'))
-    add(item('rust_tools', '󰒓', 'Tools…', 'Outdated, audit, update'))
-    add(sep('Profile'))
     local cur = cfg.rust.profile
     add(item('toggle_profile', '󰒓', 'Profile: ' .. cur,
       'Switch to ' .. (cur == 'release' and 'dev' or 'release'),
       cur == 'release' and '󰓅 release' or '󰁌 dev'))
+    add(item('rust_submenu', '󰒓', 'Rust Tools…', 'Doc, bench, expand, audit, flamegraph'))
   elseif lang == 'go' then
     add(sep('Go'))
     add(item('vet', '󰁨', 'Vet', 'go vet ./...'))
     add(item('coverage', '󰦉', 'Coverage', 'go test -cover ./...'))
-    add(item('build_race', '󰔷', 'Race Detector', 'go build -race'))
-    add(item('go_tools', '󰒓', 'Tools…', 'Mod tidy, download, graph'))
+    add(item('go_submenu', '󰒓', 'Go Tools…', 'Race, mod tidy, godoc, generate'))
   elseif lang == 'java' then
     add(sep('Java'))
     if ptype == 'maven' then
       add(item('mvn_skip_tests', '󰒭', 'Build (skip tests)', 'mvn package -DskipTests'))
       add(item('mvn_profiles', '󰒓', 'Run with Profile…', 'Pick a Maven profile'))
     elseif ptype == 'gradle' then
-      add(item('gradle_tasks', '󰒓', 'Tasks', './gradlew tasks'))
+      add(item('gradle_tasks', '󰒓', 'Gradle Tasks', './gradlew tasks'))
       add(item('gradle_wrapper', '󰚰', 'Wrapper Update', './gradlew wrapper --upgrade-gradle-properties'))
     end
-    -- Single Marvin entry point — all Java specialist tools live there
-    add(sep('Marvin'))
-    add(item('open_marvin', '󱁆', 'Open Marvin', 'Java/Maven specialist tools'))
-
-    -- GraalVM
-    local graal  = require('jason.graalvm')
-    local has_ni = graal.native_image_bin() ~= nil
-    add(sep('GraalVM'))
-    add(item('graal_build_native', '󰱒', 'Build Native', 'Compile to native binary', has_ni and '●' or '○ not installed'))
-    add(item('graal_run_native', '▶', 'Run Native', 'Execute native binary'))
-    add(item('graal_build_run', '󰔷', 'Build & Run', 'Native build then run'))
-    add(item('graal_agent_run', '󰈙', 'Agent Run', 'Collect reflection config'))
-    add(item('graal_info', '󰅾', 'GraalVM Info', 'Status & config'))
-    if not has_ni then
-      add(item('graal_install_ni', '󰚰', 'Install native-image', 'gu install native-image'))
-    end
+    -- Marvin Java/Maven specialist
+    add(item('open_marvin', '󱁆', 'Open Marvin…', 'POM, archetypes, deps, file gen'))
+    -- GraalVM (collapsed)
+    add(item('graal_submenu', '󰱒', 'GraalVM…', 'Native image build, run, agent'))
   elseif lang == 'cpp' then
-    add(sep('C++'))
-    add(item('valgrind', '󰍉', 'Valgrind', 'Memory error detection'))
-    add(item('sanitize_address', '󰍉', 'ASAN Build', 'Build with AddressSanitizer'))
-    add(item('cpp_tools', '󰒓', 'Tools…', 'Tidy, configure, sanitizers'))
+    add(sep('C/C++'))
+    add(item('cpp_compiler_submenu', '󰒓', 'Compiler…', 'Debug, Release, ASAN, TSAN, profile'))
+    add(item('cpp_tools', '󰒓', 'Tools…', 'Tidy, cppcheck, valgrind, assembly'))
   end
 
   -- Monorepo switcher
@@ -140,9 +117,7 @@ function M.build_menu(project)
 
   -- Settings
   add(sep('Settings'))
-  add(item('terminal_settings', '󰆍', 'Terminal', 'Position: ' .. cfg.terminal.position))
-  add(item('env_settings', '󰙩', 'Run Args', 'View stored per-project args'))
-  add(item('keybindings', '󰌌', 'Keybindings', 'View all shortcuts'))
+  add(item('settings_submenu', '󰒓', 'Settings…', 'Terminal, args, keybindings'))
 
   -- History
   local h = require('core.runner').history
@@ -211,67 +186,51 @@ function M.handle_action(id, project)
     runner.stop_last(); return
 
     -- Run
-  elseif id == 'build' then
-    ex.build(false)
-  elseif id == 'build_args' then
-    ex.build(true)
-  elseif id == 'run' then
-    ex.run(false)
-  elseif id == 'run_args' then
-    ex.run(true)
   elseif id == 'build_run' then
     ex.build_and_run(false)
-  elseif id == 'build_run_args' then
-    ex.build_and_run(true)
+  elseif id == 'run' then
+    ex.run(false)
   elseif id == 'test' then
     ex.test(false)
-  elseif id == 'test_filter' then
-    ex.test(true)
-  elseif id == 'clean' then
-    ex.clean()
+  elseif id == 'run_submenu' then
+    M.show_run_submenu(project); return
+
+    -- Build
+  elseif id == 'build' then
+    ex.build(false)
   elseif id == 'clean_build' then
     runner.execute_sequence(
       { { cmd = ex.get_command('clean', project), title = 'Clean' },
         { cmd = ex.get_command('build', project), title = 'Build' } },
       { cwd = project.root, term_cfg = cfg.terminal, plugin = 'jason', action_id = 'clean_build' })
-  elseif id == 'package' then
-    ex.package()
-  elseif id == 'install' then
-    ex.install()
+  elseif id == 'build_submenu' then
+    M.show_build_submenu(project); return
+
+    -- Quality
   elseif id == 'fmt' then
     ex.fmt()
   elseif id == 'lint' then
     ex.lint()
-
-    -- Quality sub-menu
   elseif id == 'quality_submenu' then
     M.show_quality_menu(project); return
 
     -- Rust
   elseif id == 'check' then
     ex.custom('cargo check', 'Check')
-  elseif id == 'doc' then
-    ex.custom('cargo doc --open', 'Docs')
-  elseif id == 'bench' then
-    ex.custom('cargo bench', 'Bench')
-  elseif id == 'expand' then
-    ex.custom('cargo expand', 'Expand')
-  elseif id == 'rust_tools' then
-    M.show_rust_tools(project); return
   elseif id == 'toggle_profile' then
     cfg.rust.profile = cfg.rust.profile == 'release' and 'dev' or 'release'
     vim.notify('Rust profile → ' .. cfg.rust.profile, vim.log.levels.INFO)
     vim.defer_fn(function() M.show(project) end, 50); return
+  elseif id == 'rust_submenu' then
+    M.show_rust_submenu(project); return
 
     -- Go
   elseif id == 'vet' then
     ex.custom('go vet ./...', 'Vet')
   elseif id == 'coverage' then
     ex.custom('go test -cover ./...', 'Coverage')
-  elseif id == 'build_race' then
-    ex.custom('go build -race ./...', 'Race Build')
-  elseif id == 'go_tools' then
-    M.show_go_tools(project); return
+  elseif id == 'go_submenu' then
+    M.show_go_submenu(project); return
 
     -- Java / Maven
   elseif id == 'mvn_skip_tests' then
@@ -282,32 +241,16 @@ function M.handle_action(id, project)
     ex.custom('./gradlew tasks', 'Tasks')
   elseif id == 'gradle_wrapper' then
     ex.custom('./gradlew wrapper --upgrade-gradle-properties', 'Wrapper')
-
-    -- Marvin
   elseif id == 'open_marvin' then
     local ok, m = pcall(require, 'marvin.dashboard')
     if ok then m.show() else vim.notify('Marvin not installed', vim.log.levels.WARN) end
     return
+  elseif id == 'graal_submenu' then
+    M.show_graal_submenu(project); return
 
-    -- GraalVM
-  elseif id == 'graal_build_native' then
-    require('jason.graalvm').build_native(project)
-  elseif id == 'graal_run_native' then
-    require('jason.graalvm').run_native(project)
-  elseif id == 'graal_build_run' then
-    require('jason.graalvm').build_and_run_native(project)
-  elseif id == 'graal_agent_run' then
-    require('jason.graalvm').run_with_agent(project)
-  elseif id == 'graal_info' then
-    require('jason.graalvm').show_info(); return
-  elseif id == 'graal_install_ni' then
-    require('jason.graalvm').install_native_image(project)
-
-    -- C++
-  elseif id == 'valgrind' then
-    ex.custom('valgrind --leak-check=full ' .. (ex.find_cmake_executable(project) or './main'), 'Valgrind')
-  elseif id == 'sanitize_address' then
-    ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=address" && cmake --build build', 'ASAN')
+    -- C/C++
+  elseif id == 'cpp_compiler_submenu' then
+    M.show_cpp_compiler_submenu(project); return
   elseif id == 'cpp_tools' then
     M.show_cpp_tools(project); return
 
@@ -316,6 +259,8 @@ function M.handle_action(id, project)
     M.show_project_picker(); return
 
     -- Settings
+  elseif id == 'settings_submenu' then
+    M.show_settings_submenu(project); return
   elseif id == 'terminal_settings' then
     M.show_terminal_settings()
   elseif id == 'env_settings' then
@@ -335,7 +280,284 @@ function M.handle_action(id, project)
   end
 end
 
--- ── Language tool sub-menus ───────────────────────────────────────────────────
+-- ── Run sub-menu ──────────────────────────────────────────────────────────────
+function M.show_run_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+      { id = 'build_run_args', icon = '▶', label = 'Build & Run…', desc = 'Prompt for run args' },
+      { id = 'run_args', icon = '󰐊', label = 'Run with Args…', desc = 'Prompt for arguments' },
+      { id = 'test_filter', icon = '󰙨', label = 'Test (filter)…', desc = 'Run matching tests only' },
+      { id = 'build_args', icon = '󰔷', label = 'Build with Args…', desc = 'Pass extra compiler flags' },
+    }, { prompt = 'Run Options', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'build_run_args' then
+        ex.build_and_run(true)
+      elseif choice.id == 'run_args' then
+        ex.run(true)
+      elseif choice.id == 'test_filter' then
+        ex.test(true)
+      elseif choice.id == 'build_args' then
+        ex.build(true)
+      end
+    end)
+end
+
+-- ── Build sub-menu ────────────────────────────────────────────────────────────
+function M.show_build_submenu(project)
+  local ex  = require('jason.executor')
+  local cfg = require('jason').config
+  require('jason.ui').select({
+      { id = 'package', icon = '󰏗', label = 'Package', desc = 'Build distributable output' },
+      { id = 'install', icon = '󰇚', label = 'Install', desc = 'Install to system / local repo' },
+      { id = 'clean', icon = '󰃢', label = 'Clean', desc = 'Remove build artifacts' },
+    }, { prompt = 'Build Options', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'package' then
+        ex.package()
+      elseif choice.id == 'install' then
+        ex.install()
+      elseif choice.id == 'clean' then
+        ex.clean()
+      end
+    end)
+end
+
+-- ── GraalVM sub-menu ──────────────────────────────────────────────────────────
+function M.show_graal_submenu(project)
+  local graal  = require('jason.graalvm')
+  local has_ni = graal.native_image_bin() ~= nil
+  local items  = {
+    {
+      id = 'graal_build_native',
+      icon = '󰱒',
+      label = 'Build Native',
+      desc = 'Compile to native binary',
+      badge = has_ni and '●' or '○ not installed'
+    },
+    { id = 'graal_run_native', icon = '▶', label = 'Run Native', desc = 'Execute native binary' },
+    { id = 'graal_build_run', icon = '󰔷', label = 'Build & Run Native', desc = 'Native build then run' },
+    { id = 'graal_agent_run', icon = '󰈙', label = 'Agent Run', desc = 'Collect reflection config' },
+    { id = 'graal_info', icon = '󰅾', label = 'GraalVM Info', desc = 'Status & config' },
+  }
+  if not has_ni then
+    items[#items + 1] = {
+      id = 'graal_install_ni',
+      icon = '󰚰',
+      label = 'Install native-image',
+      desc = 'gu install native-image'
+    }
+  end
+  require('jason.ui').select(items, {
+    prompt = 'GraalVM',
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'graal_build_native' then
+      graal.build_native(project)
+    elseif choice.id == 'graal_run_native' then
+      graal.run_native(project)
+    elseif choice.id == 'graal_build_run' then
+      graal.build_and_run_native(project)
+    elseif choice.id == 'graal_agent_run' then
+      graal.run_with_agent(project)
+    elseif choice.id == 'graal_info' then
+      graal.show_info()
+    elseif choice.id == 'graal_install_ni' then
+      graal.install_native_image(project)
+    end
+  end)
+end
+
+-- ── Rust sub-menu ─────────────────────────────────────────────────────────────
+function M.show_rust_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+      { id = 'doc', icon = '󰈙', label = 'Docs', desc = 'cargo doc --open' },
+      { id = 'bench', icon = '󰦉', label = 'Bench', desc = 'cargo bench' },
+      { id = 'expand', icon = '󰈙', label = 'Expand', desc = 'cargo expand — show macro output' },
+      { id = 'update', icon = '󰚰', label = 'Update', desc = 'cargo update' },
+      { id = 'outdated', icon = '󰦉', label = 'Outdated', desc = 'cargo outdated' },
+      { id = 'audit', icon = '󰒃', label = 'Audit', desc = 'cargo audit — CVE check' },
+      { id = 'tree', icon = '󰙅', label = 'Dep Tree', desc = 'cargo tree' },
+      { id = 'bloat', icon = '󰍉', label = 'Bloat', desc = 'Binary size analysis' },
+      { id = 'flamegraph', icon = '󰦉', label = 'Flamegraph', desc = 'cargo flamegraph' },
+    }, { prompt = 'Rust Tools', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      local cmds = {
+        doc = 'cargo doc --open',
+        bench = 'cargo bench',
+        expand = 'cargo expand',
+        update = 'cargo update',
+        outdated = 'cargo outdated',
+        audit = 'cargo audit',
+        tree = 'cargo tree',
+        bloat = 'cargo bloat',
+        flamegraph = 'cargo flamegraph',
+      }
+      if cmds[choice.id] then ex.custom(cmds[choice.id], choice.label) end
+    end)
+end
+
+-- ── Go sub-menu ───────────────────────────────────────────────────────────────
+function M.show_go_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+      { id = 'build_race', icon = '󰔷', label = 'Race Detector', desc = 'go build -race' },
+      { id = 'mod_tidy', icon = '󰚰', label = 'Mod Tidy', desc = 'go mod tidy' },
+      { id = 'mod_download', icon = '󰚰', label = 'Mod Download', desc = 'go mod download' },
+      { id = 'mod_verify', icon = '󰄬', label = 'Mod Verify', desc = 'go mod verify' },
+      { id = 'mod_graph', icon = '󰙅', label = 'Dep Graph', desc = 'go mod graph' },
+      { id = 'mod_why', icon = '󰍉', label = 'Why…', desc = 'go mod why — explain dep' },
+      { id = 'generate', icon = '󰑕', label = 'Generate', desc = 'go generate ./...' },
+      { id = 'godoc', icon = '󰈙', label = 'Godoc', desc = 'godoc -http :6060' },
+    }, { prompt = 'Go Tools', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'build_race' then
+        ex.custom('go build -race ./...', 'Race Build')
+      elseif choice.id == 'mod_tidy' then
+        ex.custom('go mod tidy', 'Tidy')
+      elseif choice.id == 'mod_download' then
+        ex.custom('go mod download', 'Download')
+      elseif choice.id == 'mod_verify' then
+        ex.custom('go mod verify', 'Verify')
+      elseif choice.id == 'mod_graph' then
+        ex.custom('go mod graph', 'Dep Graph')
+      elseif choice.id == 'mod_why' then
+        vim.ui.input({ prompt = 'Module name: ' }, function(mod)
+          if mod and mod ~= '' then ex.custom('go mod why ' .. mod, 'Why ' .. mod) end
+        end)
+      elseif choice.id == 'generate' then
+        ex.custom('go generate ./...', 'Generate')
+      elseif choice.id == 'godoc' then
+        ex.custom('godoc -http :6060', 'Godoc')
+      end
+    end)
+end
+
+-- ── C/C++ Compiler sub-menu ───────────────────────────────────────────────────
+function M.show_cpp_compiler_submenu(project)
+  local ex  = require('jason.executor')
+  local cfg = require('jason').config
+  require('jason.ui').select({
+      { id = 'cmake_debug', icon = '󰒓', label = 'CMake Debug', desc = 'cmake -DCMAKE_BUILD_TYPE=Debug' },
+      { id = 'cmake_release', icon = '󰓅', label = 'CMake Release', desc = 'cmake -DCMAKE_BUILD_TYPE=Release' },
+      { id = 'cmake_reldbg', icon = '󰒓', label = 'RelWithDebInfo', desc = 'Optimised + debug symbols' },
+      { id = 'cmake_minsz', icon = '󰒓', label = 'MinSizeRel', desc = 'Optimise for binary size' },
+      { id = 'asan', icon = '󰍉', label = 'ASAN Build', desc = 'AddressSanitizer — detect heap/stack bugs' },
+      { id = 'tsan', icon = '󰍉', label = 'TSAN Build', desc = 'ThreadSanitizer — detect data races' },
+      { id = 'ubsan', icon = '󰍉', label = 'UBSAN Build', desc = 'UndefinedBehaviorSanitizer' },
+      { id = 'lto', icon = '󰦉', label = 'LTO Build', desc = 'Link-time optimisation (Release)' },
+      { id = 'compile_commands', icon = '󰈙', label = 'Compile DB', desc = 'Generate compile_commands.json' },
+      { id = 'cpp_standard', icon = '󰒓', label = 'C++ Standard…', desc = 'Current: ' .. (cfg.cpp.standard or 'c++17') },
+      { id = 'cpp_compiler_pick', icon = '󰒓', label = 'Compiler…', desc = 'Current: ' .. (cfg.cpp.compiler or 'g++') },
+    }, { prompt = 'C/C++ Compiler', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'cmake_debug' then
+        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build', 'CMake Debug')
+      elseif choice.id == 'cmake_release' then
+        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build', 'CMake Release')
+      elseif choice.id == 'cmake_reldbg' then
+        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build', 'RelWithDebInfo')
+      elseif choice.id == 'cmake_minsz' then
+        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=MinSizeRel && cmake --build build', 'MinSizeRel')
+      elseif choice.id == 'asan' then
+        ex.custom(
+        'cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_BUILD_TYPE=Debug && cmake --build build',
+          'ASAN')
+      elseif choice.id == 'tsan' then
+        ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=thread" -DCMAKE_BUILD_TYPE=Debug && cmake --build build',
+          'TSAN')
+      elseif choice.id == 'ubsan' then
+        ex.custom(
+        'cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=undefined" -DCMAKE_BUILD_TYPE=Debug && cmake --build build',
+          'UBSAN')
+      elseif choice.id == 'lto' then
+        ex.custom(
+        'cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON && cmake --build build',
+          'LTO Release')
+      elseif choice.id == 'compile_commands' then
+        ex.custom('cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cp build/compile_commands.json .', 'Compile DB')
+      elseif choice.id == 'cpp_standard' then
+        M.pick_cpp_standard(project)
+      elseif choice.id == 'cpp_compiler_pick' then
+        M.pick_cpp_compiler(project)
+      end
+    end)
+end
+
+function M.pick_cpp_standard(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+      { id = 'c++23', label = 'C++23', desc = 'Latest standard' },
+      { id = 'c++20', label = 'C++20', desc = 'Concepts, ranges, coroutines' },
+      { id = 'c++17', label = 'C++17', desc = 'Widely supported (default)' },
+      { id = 'c++14', label = 'C++14', desc = 'Broad compatibility' },
+      { id = 'c++11', label = 'C++11', desc = 'Modern baseline' },
+      { id = 'c++03', label = 'C++03', desc = 'Legacy' },
+    }, { prompt = 'C++ Standard', format_item = function(it) return it.label end },
+    function(choice)
+      if choice then
+        cfg.cpp.standard = choice.id
+        vim.notify('C++ standard → ' .. choice.id, vim.log.levels.INFO)
+      end
+    end)
+end
+
+function M.pick_cpp_compiler(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+      { id = 'g++',     label = 'g++',     desc = 'GNU C++ compiler' },
+      { id = 'clang++', label = 'clang++', desc = 'LLVM Clang compiler' },
+      { id = 'icpx',    label = 'icpx',    desc = 'Intel DPC++ compiler' },
+    }, { prompt = 'C++ Compiler', format_item = function(it) return it.label end },
+    function(choice)
+      if choice then
+        cfg.cpp.compiler = choice.id
+        vim.notify('Compiler → ' .. choice.id, vim.log.levels.INFO)
+      end
+    end)
+end
+
+-- ── C++ Tools sub-menu ────────────────────────────────────────────────────────
+function M.show_cpp_tools(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+      { id = 'valgrind', icon = '󰍉', label = 'Valgrind', desc = 'Memory error detection' },
+      { id = 'clang_tidy', icon = '󰁨', label = 'Clang-Tidy', desc = 'Static analysis' },
+      { id = 'cppcheck', icon = '󰁨', label = 'Cppcheck', desc = 'cppcheck --enable=all src/' },
+      { id = 'cmake_pack', icon = '󰏗', label = 'CPack', desc = 'cpack --config build/CPackConfig.cmake' },
+      { id = 'cmake_inst', icon = '󰇚', label = 'CMake Install', desc = 'cmake --install build' },
+      { id = 'asm', icon = '󰈙', label = 'View Assembly', desc = 'objdump -d on built binary' },
+      { id = 'size', icon = '󰦉', label = 'Binary Size', desc = 'size on built binary' },
+    }, { prompt = 'C++ Tools', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'valgrind' then
+        ex.custom('valgrind --leak-check=full ' .. (ex.find_cmake_executable(project) or './main'), 'Valgrind')
+      elseif choice.id == 'clang_tidy' then
+        ex.custom('clang-tidy $(find src -name "*.cpp")', 'Clang-Tidy')
+      elseif choice.id == 'cppcheck' then
+        ex.custom('cppcheck --enable=all src/', 'Cppcheck')
+      elseif choice.id == 'cmake_pack' then
+        ex.custom('cpack --config build/CPackConfig.cmake', 'CPack')
+      elseif choice.id == 'cmake_inst' then
+        ex.custom('cmake --install build', 'CMake Install')
+      elseif choice.id == 'asm' then
+        local bin = ex.find_cmake_executable(project) or './main'
+        ex.custom('objdump -d ' .. bin .. ' | less', 'Assembly')
+      elseif choice.id == 'size' then
+        local bin = ex.find_cmake_executable(project) or './main'
+        ex.custom('size ' .. bin, 'Binary Size')
+      end
+    end)
+end
+
+-- ── Quality sub-menu ─────────────────────────────────────────────────────────
 function M.show_quality_menu(project)
   local lang  = project.language
   local ptype = project.type
@@ -370,7 +592,7 @@ function M.show_quality_menu(project)
 
   require('jason.ui').select(items, {
     prompt = 'Quality Tools',
-    format_item = function(it) return it.label end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
   }, function(choice)
     if not choice then return end
     local id = choice.id
@@ -399,108 +621,13 @@ function M.show_quality_menu(project)
     elseif id == 'cppcheck' then
       ex.custom('cppcheck --enable=all src/', 'Cppcheck')
     elseif id == 'valgrind' then
-      ex.custom('valgrind --leak-check=full ' .. (require('jason.executor').find_cmake_executable(project) or './main'),
-        'Valgrind')
+      ex.custom('valgrind --leak-check=full ' .. (ex.find_cmake_executable(project) or './main'), 'Valgrind')
     elseif id == 'sanitize_address' then
       ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=address" && cmake --build build', 'ASAN')
     elseif id == 'sanitize_thread' then
       ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=thread" && cmake --build build', 'TSAN')
     end
   end)
-end
-
-function M.show_rust_tools(project)
-  local ex = require('jason.executor')
-  require('jason.ui').select({
-      { id = 'update', icon = '󰚰', label = 'Update', desc = 'cargo update' },
-      { id = 'outdated', icon = '󰦉', label = 'Outdated', desc = 'cargo outdated' },
-      { id = 'audit', icon = '󰒃', label = 'Audit', desc = 'cargo audit — CVE check' },
-      { id = 'tree', icon = '󰙅', label = 'Dep Tree', desc = 'cargo tree' },
-      { id = 'bloat', icon = '󰍉', label = 'Bloat', desc = 'cargo bloat — binary size analysis' },
-      { id = 'flamegraph', icon = '󰦉', label = 'Flamegraph', 'cargo flamegraph' },
-    }, { prompt = 'Rust Tools', format_item = function(it) return it.label end },
-    function(choice)
-      if not choice then return end
-      if choice.id == 'update' then
-        ex.custom('cargo update', 'Update')
-      elseif choice.id == 'outdated' then
-        ex.custom('cargo outdated', 'Outdated')
-      elseif choice.id == 'audit' then
-        ex.custom('cargo audit', 'Audit')
-      elseif choice.id == 'tree' then
-        ex.custom('cargo tree', 'Dep Tree')
-      elseif choice.id == 'bloat' then
-        ex.custom('cargo bloat', 'Bloat')
-      elseif choice.id == 'flamegraph' then
-        ex.custom('cargo flamegraph', 'Flamegraph')
-      end
-    end)
-end
-
-function M.show_go_tools(project)
-  local ex = require('jason.executor')
-  require('jason.ui').select({
-      { id = 'mod_tidy', icon = '󰚰', label = 'Tidy', desc = 'go mod tidy' },
-      { id = 'mod_download', icon = '󰚰', label = 'Download', desc = 'go mod download' },
-      { id = 'mod_verify', icon = '󰄬', label = 'Verify', desc = 'go mod verify' },
-      { id = 'mod_graph', icon = '󰙅', label = 'Dep Graph', desc = 'go mod graph' },
-      { id = 'mod_why', icon = '󰍉', label = 'Why', desc = 'go mod why — explain dep' },
-      { id = 'generate', icon = '󰑕', label = 'Generate', desc = 'go generate ./...' },
-      { id = 'godoc', icon = '󰈙', label = 'Godoc', desc = 'godoc -http :6060' },
-    }, { prompt = 'Go Tools', format_item = function(it) return it.label end },
-    function(choice)
-      if not choice then return end
-      if choice.id == 'mod_tidy' then
-        ex.custom('go mod tidy', 'Tidy')
-      elseif choice.id == 'mod_download' then
-        ex.custom('go mod download', 'Download')
-      elseif choice.id == 'mod_verify' then
-        ex.custom('go mod verify', 'Verify')
-      elseif choice.id == 'mod_graph' then
-        ex.custom('go mod graph', 'Dep Graph')
-      elseif choice.id == 'mod_why' then
-        vim.ui.input({ prompt = 'Module name: ' }, function(mod)
-          if mod and mod ~= '' then ex.custom('go mod why ' .. mod, 'Why ' .. mod) end
-        end)
-        return
-      elseif choice.id == 'generate' then
-        ex.custom('go generate ./...', 'Generate')
-      elseif choice.id == 'godoc' then
-        ex.custom('godoc -http :6060', 'Godoc')
-      end
-    end)
-end
-
-function M.show_cpp_tools(project)
-  local ex = require('jason.executor')
-  require('jason.ui').select({
-      { id = 'cmake_debug', icon = '󰒓', label = 'CMake Debug', desc = 'cmake -B build -DCMAKE_BUILD_TYPE=Debug' },
-      { id = 'cmake_release', icon = '󰒓', label = 'CMake Release', desc = 'cmake -B build -DCMAKE_BUILD_TYPE=Release' },
-      { id = 'cmake_install', icon = '󰇚', label = 'CMake Install', desc = 'cmake --install build' },
-      { id = 'cmake_pack', icon = '󰏗', label = 'CPack', desc = 'cpack --config build/CPackConfig.cmake' },
-      { id = 'clang_tidy', icon = '󰁨', label = 'Clang-Tidy', desc = 'Static analysis' },
-      { id = 'cppcheck', icon = '󰁨', label = 'Cppcheck', desc = 'cppcheck --enable=all src/' },
-      { id = 'asm', icon = '󰈙', label = 'View Assembly', desc = 'objdump -d on built binary' },
-    }, { prompt = 'C++ Tools', format_item = function(it) return it.label end },
-    function(choice)
-      if not choice then return end
-      if choice.id == 'cmake_debug' then
-        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=Debug', 'CMake Debug')
-      elseif choice.id == 'cmake_release' then
-        ex.custom('cmake -B build -DCMAKE_BUILD_TYPE=Release', 'CMake Release')
-      elseif choice.id == 'cmake_install' then
-        ex.custom('cmake --install build', 'CMake Install')
-      elseif choice.id == 'cmake_pack' then
-        ex.custom('cpack --config build/CPackConfig.cmake', 'CPack')
-      elseif choice.id == 'clang_tidy' then
-        ex.custom('clang-tidy $(find src -name "*.cpp")', 'Clang-Tidy')
-      elseif choice.id == 'cppcheck' then
-        ex.custom('cppcheck --enable=all src/', 'Cppcheck')
-      elseif choice.id == 'asm' then
-        local bin = ex.find_cmake_executable(project) or './main'
-        ex.custom('objdump -d ' .. bin .. ' | less', 'Assembly')
-      end
-    end)
 end
 
 -- ── Maven profile picker ──────────────────────────────────────────────────────
@@ -517,7 +644,7 @@ function M.run_with_maven_profile(project)
   end
   require('jason.ui').select(items, {
       prompt = 'Maven Profile',
-      format_item = function(it) return it.label end
+      format_item = function(it) return it.label end,
     },
     function(choice)
       if choice then
@@ -544,7 +671,7 @@ function M.show_project_picker()
   end
   require('jason.ui').select(items, {
       prompt = 'Switch Project',
-      format_item = function(it) return it.label end
+      format_item = function(it) return it.label end,
     },
     function(choice)
       if choice then
@@ -555,7 +682,25 @@ function M.show_project_picker()
     end)
 end
 
--- ── Settings sub-menus ────────────────────────────────────────────────────────
+-- ── Settings sub-menu ─────────────────────────────────────────────────────────
+function M.show_settings_submenu(project)
+  require('jason.ui').select({
+      { id = 'terminal_settings', icon = '󰆍', label = 'Terminal', desc = 'Position: ' .. require('jason').config.terminal.position },
+      { id = 'env_settings', icon = '󰙩', label = 'Run Args', desc = 'View stored per-project args' },
+      { id = 'keybindings', icon = '󰌌', label = 'Keybindings', desc = 'View all shortcuts' },
+    }, { prompt = 'Settings', format_item = function(it) return it.icon .. ' ' .. it.label end },
+    function(choice)
+      if not choice then return end
+      if choice.id == 'terminal_settings' then
+        M.show_terminal_settings()
+      elseif choice.id == 'env_settings' then
+        M.show_env_settings(project)
+      elseif choice.id == 'keybindings' then
+        M.show_keybindings()
+      end
+    end)
+end
+
 function M.show_terminal_settings()
   local cfg = require('jason').config
   require('jason.ui').select({
@@ -582,8 +727,7 @@ function M.show_env_settings(project)
     string.format('  %-16s  %q', 'run args:', ex.get_args(root, 'run')),
     string.format('  %-16s  %q', 'test filter:', ex.get_args(root, 'test')),
     '',
-    '  Use "Build with args…", "Run with args…" or "Test (filter)…"',
-    '  in the Run / Build sections to update these.',
+    '  Use "Run Options…" > "Build/Run with Args" to update these.',
     '',
   }
   vim.api.nvim_echo({ { table.concat(lines, '\n'), 'Normal' } }, true, {})

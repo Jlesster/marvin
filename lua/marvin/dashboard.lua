@@ -37,66 +37,30 @@ function M.build_menu(in_maven, summary)
   add(sep('Create'))
   add(item('new_project', '󰏗', 'New Maven Project', 'Generate from archetype'))
   if in_maven then
-    add(item('new_class', '󰬷', 'New Class', 'public class …'))
-    add(item('new_main', '󰁔', 'New Main Class', 'Class with main()'))
-    add(item('new_interface', '󰜰', 'New Interface', 'Contract definition'))
-    add(item('new_enum', '󰒻', 'New Enum', 'Type-safe constants'))
-    add(item('new_record', '󰏗', 'New Record', 'Immutable data carrier'))
-    add(item('new_abstract', '󰦊', 'New Abstract Class', 'Partial implementation'))
-    add(item('new_exception', '󰅖', 'New Exception', 'Custom error type'))
+    add(item('new_file_menu', '󰬷', 'New Java File…', 'Class, Interface, Record, Enum…'))
     add(item('new_test', '󰙨', 'New JUnit Test', 'JUnit 5 test class'))
-    add(item('new_builder', '󰒓', 'New Builder', 'Builder pattern class'))
   end
 
   if in_maven then
-    -- ── Build lifecycle ─────────────────────────────────────────────────────
+    -- ── Build (with inline profile support) ─────────────────────────────────
     add(sep('Build'))
     add(item('compile', '󰑕', 'Compile', 'mvn compile'))
     add(item('test', '󰙨', 'Test', 'mvn test'))
     add(item('package', '󰏗', 'Package',
       summary and ('Build ' .. summary.artifact .. '-' .. summary.version .. '.jar') or 'mvn package'))
-    if has_assembly() then
-      add(item('package_fat', '󱊞', 'Package Fat JAR', 'JAR with all dependencies'))
-    end
-    add(item('install', '󰇚', 'Install', 'mvn install → ~/.m2'))
-    add(item('clean_install', '󰑓', 'Clean & Install', 'Full rebuild + install'))
-    add(item('verify', '󰄬', 'Verify', 'Run integration tests'))
-    add(item('skip_tests', '󰒭', 'Build (skip tests)', 'mvn package -DskipTests'))
-    if #(summary and summary.profiles or {}) > 0 then
-      add(item('with_profile', '󰒓', 'Run with Profile…', #summary.profiles .. ' profiles available'))
-    end
+    add(item('build_menu', '󰒓', 'Build Options…', 'Skip tests, fat JAR, profiles, more'))
 
     -- ── Inspect ──────────────────────────────────────────────────────────────
     add(sep('Inspect'))
-    add(item('dep_tree', '󰙅', 'Dependency Tree', 'mvn dependency:tree'))
-    add(item('dep_analyze', '󰍉', 'Dependency Analysis', 'Find unused / undeclared deps'))
-    add(item('dep_resolve', '󰚰', 'Resolve Deps', 'Download all dependencies'))
-    add(item('effective_pom', '󰈙', 'Effective POM', 'Show resolved configuration'))
-    add(item('effective_settings', '󰈙', 'Effective Settings', 'Show Maven settings'))
-    add(item('help_describe', '󰅾', 'Describe Plugin', 'mvn help:describe'))
+    add(item('inspect_menu', '󰙅', 'Inspect…', 'Dependency tree, effective POM, plugin help'))
 
     -- ── Dependencies ─────────────────────────────────────────────────────────
     add(sep('Dependencies'))
-    add(item('add_jackson', '󰘦', 'Add Jackson JSON', 'com.fasterxml.jackson'))
-    add(item('add_lwjgl', '󰊗', 'Add LWJGL', 'OpenGL / Vulkan / GLFW'))
-    add(item('add_spring', '󰋊', 'Add Spring Boot', 'spring-boot-starter'))
-    add(item('add_lombok', '󰬷', 'Add Lombok', 'Annotation processor'))
-    add(item('add_junit5', '󰙨', 'Add JUnit 5', 'org.junit.jupiter'))
-    add(item('add_mockito', '󰙨', 'Add Mockito', 'Mocking framework'))
-    add(item('check_updates', '󰦉', 'Check for Updates', 'Display newer versions'))
-    add(item('purge_cache', '󰃢', 'Purge Local Cache', 'mvn dependency:purge-local-repository'))
-    if not has_assembly() then
-      add(item('add_assembly', '󰒓', 'Enable Fat JAR', 'Add maven-assembly-plugin'))
-    end
+    add(item('dep_menu', '󰘦', 'Manage Dependencies…', 'Add, update, purge'))
 
     -- ── Configuration ────────────────────────────────────────────────────────
-    add(sep('Configuration'))
-    add(item('set_java_11', '󰬷', 'Java 11  (LTS)', 'Set compiler source/target'))
-    add(item('set_java_17', '󰬷', 'Java 17  (LTS)', 'Set compiler source/target'))
-    add(item('set_java_21', '󰬷', 'Java 21  (LTS)', 'Set compiler source/target'))
-    add(item('set_java_custom', '󰬷', 'Custom Java Version', 'Enter a version number'))
-    add(item('set_encoding', '󰉣', 'Set Encoding', 'Set project.build.sourceEncoding'))
-    add(item('add_spotless', '󰉣', 'Add Spotless', 'Code formatter plugin'))
+    add(sep('Configure'))
+    add(item('config_menu', '󰒓', 'Project Settings…', 'Java version, encoding, plugins'))
   end
 
   return items
@@ -128,13 +92,133 @@ function M.show()
   end)
 end
 
+-- ── Sub-menus ─────────────────────────────────────────────────────────────────
+
+function M.show_new_file_menu()
+  local ui = require('marvin.ui')
+  ui.select({
+    { id = 'new_class', icon = '󰬷', label = 'Class', desc = 'public class …' },
+    { id = 'new_main', icon = '󰁔', label = 'Main Class', desc = 'Class with main()' },
+    { id = 'new_interface', icon = '󰜰', label = 'Interface', desc = 'Contract definition' },
+    { id = 'new_enum', icon = '󰒻', label = 'Enum', desc = 'Type-safe constants' },
+    { id = 'new_record', icon = '󰏗', label = 'Record', desc = 'Immutable data carrier' },
+    { id = 'new_abstract', icon = '󰦊', label = 'Abstract Class', desc = 'Partial implementation' },
+    { id = 'new_exception', icon = '󰅖', label = 'Exception', desc = 'Custom error type' },
+    { id = 'new_builder', icon = '󰒓', label = 'Builder', desc = 'Builder pattern class' },
+  }, {
+    prompt = 'New Java File',
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice then M.handle_action(choice.id) end
+  end)
+end
+
+function M.show_build_menu(summary)
+  local ui = require('marvin.ui')
+  local items = {
+    { id = 'clean_install', icon = '󰑓', label = 'Clean & Install', desc = 'Full rebuild + install' },
+    { id = 'install', icon = '󰇚', label = 'Install', desc = 'mvn install → ~/.m2' },
+    { id = 'verify', icon = '󰄬', label = 'Verify', desc = 'Run integration tests' },
+    { id = 'skip_tests', icon = '󰒭', label = 'Build (skip tests)', desc = 'mvn package -DskipTests' },
+  }
+  if has_assembly() then
+    items[#items + 1] = { id = 'package_fat', icon = '󱊞', label = 'Package Fat JAR', desc = 'JAR with all dependencies' }
+  end
+  if #(summary and summary.profiles or {}) > 0 then
+    items[#items + 1] = {
+      id = 'with_profile',
+      icon = '󰒓',
+      label = 'Run with Profile…',
+      desc = #summary.profiles .. ' profiles available'
+    }
+  end
+
+  ui.select(items, {
+    prompt = 'Build Options',
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice then M.handle_action(choice.id) end
+  end)
+end
+
+function M.show_inspect_menu()
+  local ui = require('marvin.ui')
+  ui.select({
+    { id = 'dep_tree', icon = '󰙅', label = 'Dependency Tree', desc = 'mvn dependency:tree' },
+    { id = 'dep_analyze', icon = '󰍉', label = 'Dependency Analysis', desc = 'Find unused / undeclared deps' },
+    { id = 'dep_resolve', icon = '󰚰', label = 'Resolve Deps', desc = 'Download all dependencies' },
+    { id = 'effective_pom', icon = '󰈙', label = 'Effective POM', desc = 'Show resolved configuration' },
+    { id = 'effective_settings', icon = '󰈙', label = 'Effective Settings', desc = 'Show Maven settings' },
+    { id = 'help_describe', icon = '󰅾', label = 'Describe Plugin', desc = 'mvn help:describe' },
+  }, {
+    prompt = 'Inspect',
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice then M.handle_action(choice.id) end
+  end)
+end
+
+function M.show_dep_menu()
+  local ui = require('marvin.ui')
+  local items = {
+    { id = 'add_jackson', icon = '󰘦', label = 'Add Jackson JSON', desc = 'com.fasterxml.jackson' },
+    { id = 'add_lwjgl', icon = '󰊗', label = 'Add LWJGL', desc = 'OpenGL / Vulkan / GLFW' },
+    { id = 'add_spring', icon = '󰋊', label = 'Add Spring Boot', desc = 'spring-boot-starter' },
+    { id = 'add_lombok', icon = '󰬷', label = 'Add Lombok', desc = 'Annotation processor' },
+    { id = 'add_junit5', icon = '󰙨', label = 'Add JUnit 5', desc = 'org.junit.jupiter' },
+    { id = 'add_mockito', icon = '󰙨', label = 'Add Mockito', desc = 'Mocking framework' },
+    { id = 'check_updates', icon = '󰦉', label = 'Check for Updates', desc = 'Display newer versions' },
+    { id = 'purge_cache', icon = '󰃢', label = 'Purge Local Cache', desc = 'mvn dependency:purge-local-repository' },
+  }
+  if not has_assembly() then
+    items[#items + 1] = { id = 'add_assembly', icon = '󰒓', label = 'Enable Fat JAR', desc = 'Add maven-assembly-plugin' }
+  end
+
+  ui.select(items, {
+    prompt = 'Manage Dependencies',
+    enable_search = true,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice then M.handle_action(choice.id) end
+  end)
+end
+
+function M.show_config_menu()
+  local ui = require('marvin.ui')
+  ui.select({
+    { id = 'java_version_menu', icon = '󰬷', label = 'Set Java Version…', desc = 'Compiler source/target' },
+    { id = 'set_encoding', icon = '󰉣', label = 'Set Encoding…', desc = 'project.build.sourceEncoding' },
+    { id = 'add_spotless', icon = '󰉣', label = 'Add Spotless', desc = 'Code formatter plugin' },
+  }, {
+    prompt = 'Project Settings',
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice then M.handle_action(choice.id) end
+  end)
+end
+
 -- ── Action handler ────────────────────────────────────────────────────────────
 function M.handle_action(id)
   local ex = require('marvin.executor')
   local md = function() return require('marvin.dependencies') end
 
-  -- Create
-  if id == 'new_project' then
+  -- Top-level submenus
+  if id == 'new_file_menu' then
+    M.show_new_file_menu(); return
+  elseif id == 'build_menu' then
+    local summary = get_summary()
+    M.show_build_menu(summary); return
+  elseif id == 'inspect_menu' then
+    M.show_inspect_menu(); return
+  elseif id == 'dep_menu' then
+    M.show_dep_menu(); return
+  elseif id == 'config_menu' then
+    M.show_config_menu(); return
+  elseif id == 'java_version_menu' then
+    M.prompt_java_version(); return
+
+    -- Create
+  elseif id == 'new_project' then
     require('marvin.generator').create_project(); return
   elseif id == 'new_class' then
     M._new_file('Class', {})
@@ -217,7 +301,7 @@ function M.handle_action(id)
   elseif id == 'set_java_21' then
     md().set_java_version('21')
   elseif id == 'set_java_custom' then
-    M.prompt_java_version()
+    M.prompt_java_version_input()
   elseif id == 'set_encoding' then
     M.prompt_encoding()
   elseif id == 'add_spotless' then
@@ -269,7 +353,6 @@ function M.show_profile_menu()
     items[#items + 1] = { id = pid, label = pid, desc = 'Maven profile' }
   end
 
-  -- Also offer which lifecycle goal to run with the profile
   require('marvin.ui').select({
       { id = 'compile', label = 'compile' },
       { id = 'test',    label = 'test' },
@@ -303,12 +386,16 @@ function M.prompt_java_version()
   }, function(choice)
     if not choice then return end
     if choice.version == '__custom__' then
-      vim.ui.input({ prompt = 'Java version: ' }, function(v)
-        if v and v ~= '' then require('marvin.dependencies').set_java_version(v) end
-      end)
+      M.prompt_java_version_input()
     else
       require('marvin.dependencies').set_java_version(choice.version)
     end
+  end)
+end
+
+function M.prompt_java_version_input()
+  vim.ui.input({ prompt = 'Java version: ' }, function(v)
+    if v and v ~= '' then require('marvin.dependencies').set_java_version(v) end
   end)
 end
 
