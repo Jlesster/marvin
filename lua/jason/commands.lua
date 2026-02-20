@@ -30,9 +30,8 @@ function M.register()
   cmd('JasonBuildRun', function() require('jason.executor').build_and_run() end, { desc = 'Build then run' })
 
   -- Arbitrary command in project context
-  cmd('JasonExec', function(o)
-    require('jason.executor').custom(o.args)
-  end, { nargs = '+', desc = 'Run command in project root' })
+  cmd('JasonExec', function(o) require('jason.executor').custom(o.args) end,
+    { nargs = '+', desc = 'Run command in project root' })
 
   -- Config
   cmd('JasonConfig', function() require('jason.configurator').show() end, { desc = 'Configure project settings' })
@@ -41,10 +40,14 @@ function M.register()
   cmd('JasonStop', function() require('core.runner').stop_last() end, { desc = 'Stop last job' })
   cmd('JasonStopAll', function() require('core.runner').stop_all() end, { desc = 'Stop all jobs' })
 
-  -- History / output
+  -- ── Console (overseer-style task history + output viewer) ──────────────────
+  cmd('JasonConsole', function() require('jason.console').toggle() end,
+    { desc = 'Toggle Jason task console' })
+
+  -- Legacy history (now routes to console)
   cmd('JasonHistory', function()
-    require('jason.dashboard').show_history(require('jason.detector').get_project())
-  end, { desc = 'Show run history' })
+    require('jason.console').open()
+  end, { desc = 'Show run history (task console)' })
 
   -- Sub-project switcher
   cmd('JasonSwitch', function()

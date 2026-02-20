@@ -5,9 +5,21 @@
 
 local M = {}
 
+-- ── Formatting helpers ────────────────────────────────────────────────────────
+-- format_item embeds the icon into the display string.
+-- We do NOT store icon as a table field, so marvin.ui cannot double-render it.
+local function plain_fmt(it) return it.label end
+
 local function sep(label) return { label = label, is_separator = true } end
+
+-- Top-level item: _icon is private (not used by marvin.ui), embedded by format_item.
 local function item(id, icon, label, desc, badge)
-  return { id = id, icon = icon, label = label, desc = desc, badge = badge }
+  return { id = id, _icon = icon, label = label, desc = desc, badge = badge }
+end
+
+-- Sub-menu item: icon is baked into the label string, no separate field.
+local function sub(id, icon, label, desc, badge)
+  return { id = id, label = icon .. ' ' .. label, desc = desc, badge = badge }
 end
 
 local function get_summary()
@@ -33,16 +45,12 @@ function M.build_menu(in_maven, summary)
   local items = {}
   local function add(t) items[#items + 1] = t end
 
-  -- ── Create ────────────────────────────────────────────────────────────────
   add(sep('Create'))
   add(item('new_project', '󰏗', 'New Maven Project', 'Generate from archetype'))
   if in_maven then
     add(item('new_file_menu', '󰬷', 'New Java File…', 'Class, Interface, Record, Enum…'))
     add(item('new_test', '󰙨', 'New JUnit Test', 'JUnit 5 test class'))
-  end
 
-  if in_maven then
-    -- ── Build (with inline profile support) ─────────────────────────────────
     add(sep('Build'))
     add(item('compile', '󰑕', 'Compile', 'mvn compile'))
     add(item('test', '󰙨', 'Test', 'mvn test'))
@@ -50,15 +58,12 @@ function M.build_menu(in_maven, summary)
       summary and ('Build ' .. summary.artifact .. '-' .. summary.version .. '.jar') or 'mvn package'))
     add(item('build_menu', '󰒓', 'Build Options…', 'Skip tests, fat JAR, profiles, more'))
 
-    -- ── Inspect ──────────────────────────────────────────────────────────────
     add(sep('Inspect'))
-    add(item('inspect_menu', '󰙅', 'Inspect…', 'Dependency tree, effective POM, plugin help'))
+    add(item('inspect_menu', '󰙅', 'Inspect…', 'Dep tree, effective POM, plugin help'))
 
-    -- ── Dependencies ─────────────────────────────────────────────────────────
     add(sep('Dependencies'))
     add(item('dep_menu', '󰘦', 'Manage Dependencies…', 'Add, update, purge'))
 
-    -- ── Configuration ────────────────────────────────────────────────────────
     add(sep('Configure'))
     add(item('config_menu', '󰒓', 'Project Settings…', 'Java version, encoding, plugins'))
   end
@@ -72,20 +77,16 @@ function M.show()
   local in_maven = project.detect()
   local summary  = in_maven and get_summary() or nil
 
-  local prompt
-  if summary then
-    prompt = 'Marvin  ' .. summary.group .. ':' .. summary.artifact
-        .. '  v' .. summary.version
-  else
-    prompt = 'Marvin  (no Maven project)'
-  end
+  local prompt   = summary
+      and ('Marvin  ' .. summary.group .. ':' .. summary.artifact .. '  v' .. summary.version)
+      or 'Marvin  (no Maven project)'
 
   require('marvin.ui').select(M.build_menu(in_maven, summary), {
     prompt        = prompt,
     enable_search = true,
     format_item   = function(it)
       if it.is_separator then return it.label end
-      return (it.icon and it.icon .. ' ' or '') .. it.label
+      return (it._icon and (it._icon .. ' ') or '') .. it.label
     end,
   }, function(choice)
     if choice then M.handle_action(choice.id) end
@@ -95,106 +96,77 @@ end
 -- ── Sub-menus ─────────────────────────────────────────────────────────────────
 
 function M.show_new_file_menu()
-  local ui = require('marvin.ui')
-  ui.select({
-    { id = 'new_class', icon = '󰬷', label = 'Class', desc = 'public class …' },
-    { id = 'new_main', icon = '󰁔', label = 'Main Class', desc = 'Class with main()' },
-    { id = 'new_interface', icon = '󰜰', label = 'Interface', desc = 'Contract definition' },
-    { id = 'new_enum', icon = '󰒻', label = 'Enum', desc = 'Type-safe constants' },
-    { id = 'new_record', icon = '󰏗', label = 'Record', desc = 'Immutable data carrier' },
-    { id = 'new_abstract', icon = '󰦊', label = 'Abstract Class', desc = 'Partial implementation' },
-    { id = 'new_exception', icon = '󰅖', label = 'Exception', desc = 'Custom error type' },
-    { id = 'new_builder', icon = '󰒓', label = 'Builder', desc = 'Builder pattern class' },
-  }, {
-    prompt = 'New Java File',
-    format_item = function(it) return it.icon .. ' ' .. it.label end,
-  }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
+  require('marvin.ui').select({
+      sub('new_class', '󰬷', 'Class', 'public class …'),
+      sub('new_main', '󰁔', 'Main Class', 'Class with main()'),
+      sub('new_interface', '󰜰', 'Interface', 'Contract definition'),
+      sub('new_enum', '󰒻', 'Enum', 'Type-safe constants'),
+      sub('new_record', '󰏗', 'Record', 'Immutable data carrier'),
+      sub('new_abstract', '󰦊', 'Abstract Class', 'Partial implementation'),
+      sub('new_exception', '󰅖', 'Exception', 'Custom error type'),
+      sub('new_builder', '󰒓', 'Builder', 'Builder pattern class'),
+    }, { prompt = 'New Java File', format_item = plain_fmt },
+    function(choice) if choice then M.handle_action(choice.id) end end)
 end
 
 function M.show_build_menu(summary)
-  local ui = require('marvin.ui')
   local items = {
-    { id = 'clean_install', icon = '󰑓', label = 'Clean & Install', desc = 'Full rebuild + install' },
-    { id = 'install', icon = '󰇚', label = 'Install', desc = 'mvn install → ~/.m2' },
-    { id = 'verify', icon = '󰄬', label = 'Verify', desc = 'Run integration tests' },
-    { id = 'skip_tests', icon = '󰒭', label = 'Build (skip tests)', desc = 'mvn package -DskipTests' },
+    sub('clean_install', '󰑓', 'Clean & Install', 'Full rebuild + install'),
+    sub('install', '󰇚', 'Install', 'mvn install → ~/.m2'),
+    sub('verify', '󰄬', 'Verify', 'Run integration tests'),
+    sub('skip_tests', '󰒭', 'Build (skip tests)', 'mvn package -DskipTests'),
   }
   if has_assembly() then
-    items[#items + 1] = { id = 'package_fat', icon = '󱊞', label = 'Package Fat JAR', desc = 'JAR with all dependencies' }
+    items[#items + 1] = sub('package_fat', '󱊞', 'Package Fat JAR', 'JAR with all dependencies')
   end
   if #(summary and summary.profiles or {}) > 0 then
-    items[#items + 1] = {
-      id = 'with_profile',
-      icon = '󰒓',
-      label = 'Run with Profile…',
-      desc = #summary.profiles .. ' profiles available'
-    }
+    items[#items + 1] = sub('with_profile', '󰒓', 'Run with Profile…',
+      #summary.profiles .. ' profiles available')
   end
 
-  ui.select(items, {
-    prompt = 'Build Options',
-    format_item = function(it) return it.icon .. ' ' .. it.label end,
-  }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
+  require('marvin.ui').select(items,
+    { prompt = 'Build Options', format_item = plain_fmt },
+    function(choice) if choice then M.handle_action(choice.id) end end)
 end
 
 function M.show_inspect_menu()
-  local ui = require('marvin.ui')
-  ui.select({
-    { id = 'dep_tree', icon = '󰙅', label = 'Dependency Tree', desc = 'mvn dependency:tree' },
-    { id = 'dep_analyze', icon = '󰍉', label = 'Dependency Analysis', desc = 'Find unused / undeclared deps' },
-    { id = 'dep_resolve', icon = '󰚰', label = 'Resolve Deps', desc = 'Download all dependencies' },
-    { id = 'effective_pom', icon = '󰈙', label = 'Effective POM', desc = 'Show resolved configuration' },
-    { id = 'effective_settings', icon = '󰈙', label = 'Effective Settings', desc = 'Show Maven settings' },
-    { id = 'help_describe', icon = '󰅾', label = 'Describe Plugin', desc = 'mvn help:describe' },
-  }, {
-    prompt = 'Inspect',
-    format_item = function(it) return it.icon .. ' ' .. it.label end,
-  }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
+  require('marvin.ui').select({
+      sub('dep_tree', '󰙅', 'Dependency Tree', 'mvn dependency:tree'),
+      sub('dep_analyze', '󰍉', 'Dependency Analysis', 'Find unused / undeclared deps'),
+      sub('dep_resolve', '󰚰', 'Resolve Deps', 'Download all dependencies'),
+      sub('effective_pom', '󰈙', 'Effective POM', 'Show resolved configuration'),
+      sub('effective_settings', '󰈙', 'Effective Settings', 'Show Maven settings'),
+      sub('help_describe', '󰅾', 'Describe Plugin', 'mvn help:describe'),
+    }, { prompt = 'Inspect', format_item = plain_fmt },
+    function(choice) if choice then M.handle_action(choice.id) end end)
 end
 
 function M.show_dep_menu()
-  local ui = require('marvin.ui')
   local items = {
-    { id = 'add_jackson', icon = '󰘦', label = 'Add Jackson JSON', desc = 'com.fasterxml.jackson' },
-    { id = 'add_lwjgl', icon = '󰊗', label = 'Add LWJGL', desc = 'OpenGL / Vulkan / GLFW' },
-    { id = 'add_spring', icon = '󰋊', label = 'Add Spring Boot', desc = 'spring-boot-starter' },
-    { id = 'add_lombok', icon = '󰬷', label = 'Add Lombok', desc = 'Annotation processor' },
-    { id = 'add_junit5', icon = '󰙨', label = 'Add JUnit 5', desc = 'org.junit.jupiter' },
-    { id = 'add_mockito', icon = '󰙨', label = 'Add Mockito', desc = 'Mocking framework' },
-    { id = 'check_updates', icon = '󰦉', label = 'Check for Updates', desc = 'Display newer versions' },
-    { id = 'purge_cache', icon = '󰃢', label = 'Purge Local Cache', desc = 'mvn dependency:purge-local-repository' },
+    sub('add_jackson', '󰘦', 'Add Jackson JSON', 'com.fasterxml.jackson'),
+    sub('add_lwjgl', '󰊗', 'Add LWJGL', 'OpenGL / Vulkan / GLFW'),
+    sub('add_spring', '󰋊', 'Add Spring Boot', 'spring-boot-starter'),
+    sub('add_lombok', '󰬷', 'Add Lombok', 'Annotation processor'),
+    sub('add_junit5', '󰙨', 'Add JUnit 5', 'org.junit.jupiter'),
+    sub('add_mockito', '󰙨', 'Add Mockito', 'Mocking framework'),
+    sub('check_updates', '󰦉', 'Check for Updates', 'Display newer versions'),
+    sub('purge_cache', '󰃢', 'Purge Local Cache', 'mvn dependency:purge-local-repository'),
   }
   if not has_assembly() then
-    items[#items + 1] = { id = 'add_assembly', icon = '󰒓', label = 'Enable Fat JAR', desc = 'Add maven-assembly-plugin' }
+    items[#items + 1] = sub('add_assembly', '󰒓', 'Enable Fat JAR', 'Add maven-assembly-plugin')
   end
-
-  ui.select(items, {
-    prompt = 'Manage Dependencies',
-    enable_search = true,
-    format_item = function(it) return it.icon .. ' ' .. it.label end,
-  }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
+  require('marvin.ui').select(items,
+    { prompt = 'Manage Dependencies', enable_search = true, format_item = plain_fmt },
+    function(choice) if choice then M.handle_action(choice.id) end end)
 end
 
 function M.show_config_menu()
-  local ui = require('marvin.ui')
-  ui.select({
-    { id = 'java_version_menu', icon = '󰬷', label = 'Set Java Version…', desc = 'Compiler source/target' },
-    { id = 'set_encoding', icon = '󰉣', label = 'Set Encoding…', desc = 'project.build.sourceEncoding' },
-    { id = 'add_spotless', icon = '󰉣', label = 'Add Spotless', desc = 'Code formatter plugin' },
-  }, {
-    prompt = 'Project Settings',
-    format_item = function(it) return it.icon .. ' ' .. it.label end,
-  }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
+  require('marvin.ui').select({
+      sub('java_version_menu', '󰬷', 'Set Java Version…', 'Compiler source/target'),
+      sub('set_encoding', '󰉣', 'Set Encoding…', 'project.build.sourceEncoding'),
+      sub('add_spotless', '󰉣', 'Add Spotless', 'Code formatter plugin'),
+    }, { prompt = 'Project Settings', format_item = plain_fmt },
+    function(choice) if choice then M.handle_action(choice.id) end end)
 end
 
 -- ── Action handler ────────────────────────────────────────────────────────────
@@ -202,12 +174,11 @@ function M.handle_action(id)
   local ex = require('marvin.executor')
   local md = function() return require('marvin.dependencies') end
 
-  -- Top-level submenus
+  -- Submenu dispatchers
   if id == 'new_file_menu' then
     M.show_new_file_menu(); return
   elseif id == 'build_menu' then
-    local summary = get_summary()
-    M.show_build_menu(summary); return
+    M.show_build_menu(get_summary()); return
   elseif id == 'inspect_menu' then
     M.show_inspect_menu(); return
   elseif id == 'dep_menu' then
@@ -309,7 +280,7 @@ function M.handle_action(id)
   end
 end
 
--- ── Helpers ───────────────────────────────────────────────────────────────────
+-- ── File creation helpers ─────────────────────────────────────────────────────
 function M._new_file(type_name, opts)
   local ok, jc = pcall(require, 'marvin.java_creator')
   if not ok then
@@ -328,7 +299,9 @@ end
 function M._new_file_record()
   local jc = require('marvin.java_creator')
   jc.prompt_fields(function(fields)
-    if fields then jc.create_file_interactive('Record', { fields = fields }, function() M.show() end) end
+    if fields then
+      jc.create_file_interactive('Record', { fields = fields }, function() M.show() end)
+    end
   end, '󰏗 Record fields (Type name, …)')
 end
 
@@ -342,15 +315,16 @@ function M._new_file_builder()
   end, '󰒓 Builder fields (Type name, …)')
 end
 
+-- ── Profile picker ────────────────────────────────────────────────────────────
 function M.show_profile_menu()
-  local proj = require('marvin.project').get_project()
+  local proj     = require('marvin.project').get_project()
   local profiles = proj and proj.info and proj.info.profiles or {}
   if #profiles == 0 then
     vim.notify('No profiles found in pom.xml', vim.log.levels.INFO); return
   end
-  local items = {}
+  local prof_items = {}
   for _, pid in ipairs(profiles) do
-    items[#items + 1] = { id = pid, label = pid, desc = 'Maven profile' }
+    prof_items[#prof_items + 1] = { id = pid, label = pid, desc = 'Maven profile' }
   end
 
   require('marvin.ui').select({
@@ -359,38 +333,34 @@ function M.show_profile_menu()
       { id = 'package', label = 'package' },
       { id = 'install', label = 'install' },
       { id = 'verify',  label = 'verify' },
-    }, { prompt = 'Goal to run', format_item = function(it) return it.label end },
-    function(goal_choice)
-      if not goal_choice then return end
-      require('marvin.ui').select(items, {
-        prompt = 'Profile for: ' .. goal_choice.id,
-        format_item = function(it) return it.label end,
-      }, function(profile_choice)
-        if profile_choice then
-          require('marvin.executor').run(goal_choice.id, { profile = profile_choice.id })
-        end
-      end)
+    }, { prompt = 'Goal to run', format_item = plain_fmt },
+    function(goal)
+      if not goal then return end
+      require('marvin.ui').select(prof_items,
+        { prompt = 'Profile for: ' .. goal.id, format_item = plain_fmt },
+        function(prof)
+          if prof then require('marvin.executor').run(goal.id, { profile = prof.id }) end
+        end)
     end)
 end
 
+-- ── Prompts ───────────────────────────────────────────────────────────────────
 function M.prompt_java_version()
   require('marvin.ui').select({
-    { version = '21', label = 'Java 21 (LTS)', desc = 'Virtual threads, pattern matching' },
-    { version = '17', label = 'Java 17 (LTS)', desc = 'Sealed classes, records' },
-    { version = '11', label = 'Java 11 (LTS)', desc = 'Widely adopted' },
-    { version = '8', label = 'Java 8  (LTS)', desc = 'Maximum compatibility' },
-    { version = '__custom__', label = 'Custom…', desc = 'Enter version number' },
-  }, {
-    prompt = 'Java Version',
-    format_item = function(it) return it.label end,
-  }, function(choice)
-    if not choice then return end
-    if choice.version == '__custom__' then
-      M.prompt_java_version_input()
-    else
-      require('marvin.dependencies').set_java_version(choice.version)
-    end
-  end)
+      { version = '21', label = 'Java 21 (LTS)', desc = 'Virtual threads, pattern matching' },
+      { version = '17', label = 'Java 17 (LTS)', desc = 'Sealed classes, records' },
+      { version = '11', label = 'Java 11 (LTS)', desc = 'Widely adopted' },
+      { version = '8', label = 'Java 8  (LTS)', desc = 'Maximum compatibility' },
+      { version = '__custom__', label = 'Custom…', desc = 'Enter version number' },
+    }, { prompt = 'Java Version', format_item = plain_fmt },
+    function(choice)
+      if not choice then return end
+      if choice.version == '__custom__' then
+        M.prompt_java_version_input()
+      else
+        require('marvin.dependencies').set_java_version(choice.version)
+      end
+    end)
 end
 
 function M.prompt_java_version_input()
@@ -404,7 +374,7 @@ function M.prompt_encoding()
       { id = 'UTF-8',      label = 'UTF-8',      desc = 'Recommended' },
       { id = 'ISO-8859-1', label = 'ISO-8859-1', desc = 'Latin-1' },
       { id = 'US-ASCII',   label = 'US-ASCII',   desc = 'ASCII only' },
-    }, { prompt = 'Source Encoding', format_item = function(it) return it.label end },
+    }, { prompt = 'Source Encoding', format_item = plain_fmt },
     function(choice)
       if choice then
         local ok, md = pcall(require, 'marvin.dependencies')

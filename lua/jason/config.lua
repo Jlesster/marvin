@@ -17,21 +17,22 @@ M.defaults = {
 
   keymaps = {
     dashboard = '<leader>jb',
-    build = '<leader>jc',
-    run = '<leader>jr',
-    test = '<leader>jt',
-    clean = '<leader>jx',
+    build     = '<leader>jc',
+    run       = '<leader>jr',
+    test      = '<leader>jt',
+    clean     = '<leader>jx',
+    console   = '<leader>jo', -- Task console (overseer-style output + history)
   },
 
   -- Language-specific configs
   java = {
-    build_tool = 'auto',        -- auto, maven, gradle, javac
+    build_tool        = 'auto', -- auto, maven, gradle, javac
     main_class_finder = 'auto', -- auto, prompt
   },
 
   rust = {
     build_tool = 'cargo',
-    profile = 'dev', -- dev, release
+    profile    = 'dev', -- dev, release
   },
 
   go = {
@@ -40,17 +41,17 @@ M.defaults = {
 
   cpp = {
     build_tool = 'auto', -- auto, cmake, make, gcc
-    compiler = 'g++',
-    standard = 'c++17',
+    compiler   = 'g++',
+    standard   = 'c++17',
   },
 
   graalvm = {
-    extra_build_args = '',               -- extra flags passed to native-image
-    output_dir       = 'target/native',  -- relative to project root
-    no_fallback      = true,             -- --no-fallback (pure native, no JVM backup)
-    g1gc             = false,            -- --gc=G1  (GraalVM EE only)
-    pgo              = 'none',           -- 'none' | 'instrument' | 'optimize'
-    report_size      = true,             -- -H:+PrintAnalysisCallTree
+    extra_build_args = '',              -- extra flags passed to native-image
+    output_dir       = 'target/native', -- relative to project root
+    no_fallback      = true,            -- --no-fallback (pure native, no JVM backup)
+    g1gc             = false,           -- --gc=G1  (GraalVM EE only)
+    pgo              = 'none',          -- 'none' | 'instrument' | 'optimize'
+    report_size      = true,            -- -H:+PrintAnalysisCallTree
     agent_output_dir = 'src/main/resources/META-INF/native-image',
   },
 }
