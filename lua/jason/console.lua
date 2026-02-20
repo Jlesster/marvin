@@ -5,7 +5,7 @@
 
 local M = {}
 
--- ── Colour palette (reuse Jason's theme) ──────────────────────────────────────
+-- ── Colour palette ────────────────────────────────────────────────────────────
 local C = {
   bg       = '#1e1e2e',
   bg2      = '#181825',
@@ -51,12 +51,44 @@ local state = {
   out_buf  = nil,
   list_win = nil,
   out_win  = nil,
-  sel      = 1,  -- selected row index in history
+  sel      = 1,
   ns_list  = vim.api.nvim_create_namespace('jason_con_list'),
   ns_out   = vim.api.nvim_create_namespace('jason_con_out'),
   open     = false,
-  _timer   = nil,  -- live-refresh uv_timer
+  _timer   = nil,
 }
+
+-- ── Runner hook registration (once) ──────────────────────────────────────────
+local _hooks_registered = false
+
+local function register_hooks()
+  if _hooks_registered then return end
+  _hooks_registered = true
+
+  local runner = require('core.runner')
+
+  -- When a job starts: open the console (or just redraw) and jump to entry 1
+  -- (newest-first, record() always prepends).
+  runner.on_start(function(_entry)
+    vim.schedule(function()
+      state.sel = 1
+      if not state.open then
+        M.open()
+      else
+        redraw()
+      end
+    end)
+  end)
+
+  -- When a job finishes: redraw so spinner → ✓/✗ and duration fills in.
+  runner.on_finish(function(_entry)
+    vim.schedule(function()
+      if state.open and is_valid_win(state.list_win) then
+        redraw()
+      end
+    end)
+  end)
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 local function ago(ts)
@@ -79,8 +111,6 @@ local function dur(s)
   return string.format('%dm%ds', math.floor(s / 60), s % 60)
 end
 
-local function runner() return require('core.runner') end
-
 local function history()
   local ok, r = pcall(require, 'core.runner')
   return ok and r.history or {}
@@ -88,7 +118,7 @@ end
 
 local function running_jobs()
   local ok, r = pcall(require, 'core.runner')
-  return ok and r.running or {}
+  return ok and r.get_running and r.get_running() or {}
 end
 
 local function is_valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
@@ -113,7 +143,7 @@ local function render_list()
   add('  󰋚 Task Console', { { 'JasonConTitle', 2, -1 } })
   add(string.rep('─', LIST_W), { { 'JasonConSep', 0, -1 } })
 
-  -- Running jobs (live section)
+  -- Running jobs (live section) — these are jobs still in M.jobs (no success yet)
   local running = running_jobs()
   if running and #running > 0 then
     add(' ● Running', { { 'JasonConRunning', 1, 2 }, { 'JasonConSepLbl', 3, -1 } })
@@ -191,7 +221,6 @@ local function render_output()
   end
 
   if not entry then
-    -- Try to show live output from the first running job
     local running = running_jobs()
     if running and #running > 0 then
       local job = running[1]
@@ -207,30 +236,26 @@ local function render_output()
       add('  No entry selected.', { { 'JasonConDim', 0, -1 } })
     end
   else
-    -- Header bar
     local ok_str = entry.success == nil and '⟳ Running'
         or (entry.success and '✓ Success' or '✗ Failed')
     local ok_hl  = entry.success == nil and 'JasonConRunning'
         or (entry.success and 'JasonConOk' or 'JasonConFail')
     add('  ' .. ok_str .. '  ' .. (entry.action or ''), { { ok_hl, 2, 2 + #ok_str } })
-    local meta = '  cmd: ' .. (entry.cmd or '?')
-    add(meta, { { 'JasonConCmd', 7, -1 } })
+    add('  cmd: ' .. (entry.cmd or '?'), { { 'JasonConCmd', 7, -1 } })
     if entry.timestamp then
       add('  ran: ' .. os.date('%H:%M:%S', entry.timestamp) .. '  ' .. ago(entry.timestamp),
         { { 'JasonConTime', 7, -1 } })
     end
-    if entry.duration then
+    if entry.duration and entry.duration > 0 then
       add('  dur: ' .. dur(entry.duration), { { 'JasonConDim', 0, -1 } })
     end
     add(string.rep('─', 60), { { 'JasonConSep', 0, -1 } })
 
-    -- Output lines
     local output = entry.output or {}
     if #output == 0 then
       add('  (no captured output)', { { 'JasonConDim', 0, -1 } })
     else
       for _, ln in ipairs(output) do
-        -- Highlight common patterns
         local specs = {}
         if ln:match('%[ERROR%]') or ln:match('^error') or ln:match('FAILED') then
           specs = { { 'JasonConFail', 0, -1 } }
@@ -252,7 +277,6 @@ local function render_output()
     pcall(vim.api.nvim_buf_add_highlight, state.out_buf, state.ns_out, h2.hl, h2.line, h2.cs, h2.ce)
   end
 
-  -- Update output window title
   if is_valid_win(state.out_win) then
     local h2 = history()
     local e  = h2[state.sel]
@@ -263,7 +287,10 @@ local function render_output()
   end
 end
 
-local function redraw()
+-- forward-declare so register_hooks closure can see it
+local redraw
+
+redraw = function()
   render_list()
   render_output()
 end
@@ -307,24 +334,22 @@ function M.open()
   setup_hl()
 
   if state.open and is_valid_win(state.list_win) then
-    -- Toggle: close if already open
     M.close(); return
   end
 
   state.open = true
-  state.sel  = math.max(1, math.min(state.sel, #history()))
+  state.sel  = math.max(1, math.min(state.sel, math.max(1, #history())))
   if state.sel == 0 then state.sel = 1 end
 
   local screen  = vim.api.nvim_list_uis()[1]
   local W       = screen.width
   local H       = screen.height
-
   local TOTAL_H = math.floor(H * 0.45)
   local OUT_W   = W - LIST_W - 3
   local ROW     = H - TOTAL_H - 2
   local COL     = 1
 
-  -- ── Buffers ────────────────────────────────────────────────────────────────
+  -- Buffers
   local function mkbuf()
     local b = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_option_value('buftype', 'nofile', { buf = b })
@@ -337,7 +362,7 @@ function M.open()
   state.list_buf    = mkbuf()
   state.out_buf     = mkbuf()
 
-  -- ── Windows ────────────────────────────────────────────────────────────────
+  -- Windows
   local common_opts = {
     relative = 'editor',
     height   = TOTAL_H,
@@ -347,19 +372,21 @@ function M.open()
     border   = 'single',
   }
 
-  state.list_win    = vim.api.nvim_open_win(state.list_buf, true, vim.tbl_extend('force', common_opts, {
-    width     = LIST_W,
-    col       = COL,
-    title     = { { ' Jason Console ', 'JasonConTitle' } },
-    title_pos = 'center',
-  }))
+  state.list_win    = vim.api.nvim_open_win(state.list_buf, true,
+    vim.tbl_extend('force', common_opts, {
+      width     = LIST_W,
+      col       = COL,
+      title     = { { ' Jason Console ', 'JasonConTitle' } },
+      title_pos = 'center',
+    }))
 
-  state.out_win     = vim.api.nvim_open_win(state.out_buf, false, vim.tbl_extend('force', common_opts, {
-    width     = OUT_W,
-    col       = COL + LIST_W + 1,
-    title     = { { ' output ', 'JasonConOutTitle' } },
-    title_pos = 'left',
-  }))
+  state.out_win     = vim.api.nvim_open_win(state.out_buf, false,
+    vim.tbl_extend('force', common_opts, {
+      width     = OUT_W,
+      col       = COL + LIST_W + 1,
+      title     = { { ' output ', 'JasonConOutTitle' } },
+      title_pos = 'left',
+    }))
 
   local function setwhl(w, n, b)
     vim.api.nvim_set_option_value('winhl', 'Normal:' .. n .. ',FloatBorder:' .. b, { win = w })
@@ -378,12 +405,12 @@ function M.open()
     relativenumber = false,
     signcolumn = 'no',
     scrolloff = 2,
-    cursorline = false
+    cursorline = false,
   }
   setwopt(state.list_win, base_wopts)
   setwopt(state.out_win, vim.tbl_extend('force', base_wopts, { wrap = true }))
 
-  -- ── Keymaps ────────────────────────────────────────────────────────────────
+  -- Keymaps
   local mo = { noremap = true, silent = true, buffer = state.list_buf }
 
   local function nav_h(n)
@@ -406,7 +433,6 @@ function M.open()
     local p = require('jason.detector').get_project()
     if not p then return end
     require('jason.executor').custom(e.cmd, e.action)
-    vim.defer_fn(redraw, 200)
   end
 
   local function dismiss_sel()
@@ -434,7 +460,7 @@ function M.open()
   local omo = { noremap = true, silent = true, buffer = state.out_buf }
   vim.keymap.set('n', 'q', M.close, omo)
   vim.keymap.set('n', '<Esc>', M.close, omo)
-  vim.keymap.set('n', '<Tab>', function() -- jump back to list
+  vim.keymap.set('n', '<Tab>', function()
     if is_valid_win(state.list_win) then
       vim.api.nvim_set_current_win(state.list_win)
     end
@@ -460,13 +486,14 @@ function M.open()
   })
 
   redraw()
+  register_hooks() -- idempotent, registers on_start / on_finish once
   start_timer()
 end
 
 -- ── Toggle (main entry point) ─────────────────────────────────────────────────
 function M.toggle() M.open() end
 
--- ── show_for: open console and jump to a specific entry by action_id ─────────
+-- ── show_for: open console and jump to a specific entry by action_id ──────────
 function M.show_for(action_id)
   local h = history()
   for i, e in ipairs(h) do

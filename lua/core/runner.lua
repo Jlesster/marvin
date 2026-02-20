@@ -3,18 +3,26 @@
 -- Owns: terminal/background execution, job tracking, unified history,
 --       sequence runner, watch/restart mode, output log storage.
 
-local M      = {}
+local M            = {}
 
-M.jobs       = {} -- jid -> { title, cmd, start_time, buf?, win? }
-M.history    = {} -- newest-first list of run entries
-M.MAX_HIST   = 100
+M.jobs             = {} -- jid -> { title, cmd, start_time, buf?, win? }
+M.history          = {} -- newest-first list of run entries
+M.MAX_HIST         = 100
 
 -- ── Listeners ─────────────────────────────────────────────────────────────────
-M._listeners = {}
+M._listeners       = {}
+M._start_listeners = {}
+
 function M.on_finish(fn) M._listeners[#M._listeners + 1] = fn end
+
+function M.on_start(fn) M._start_listeners[#M._start_listeners + 1] = fn end
 
 local function fire(entry)
   for _, fn in ipairs(M._listeners) do pcall(fn, entry) end
+end
+
+local function fire_start(entry)
+  for _, fn in ipairs(M._start_listeners) do pcall(fn, entry) end
 end
 
 -- ── History ───────────────────────────────────────────────────────────────────
@@ -22,7 +30,6 @@ local function record(e)
   e.timestamp = e.timestamp or os.time()
   table.insert(M.history, 1, e)
   if #M.history > M.MAX_HIST then table.remove(M.history) end
-  fire(e)
 end
 
 function M.clear_history() M.history = {} end
@@ -42,14 +49,14 @@ local function win_float(buf, title, cfg)
   local r  = math.floor((ui.height - h) / 2)
   local c  = math.floor((ui.width - w) / 2)
   return vim.api.nvim_open_win(buf, true, {
-    relative = 'editor',
-    width = w,
-    height = h,
-    row = r,
-    col = c,
-    style = 'minimal',
-    border = 'rounded',
-    title = ' ' .. title .. ' ',
+    relative  = 'editor',
+    width     = w,
+    height    = h,
+    row       = r,
+    col       = c,
+    style     = 'minimal',
+    border    = 'rounded',
+    title     = ' ' .. title .. ' ',
     title_pos = 'center',
   })
 end
@@ -78,9 +85,12 @@ end
 
 local function buf_keymaps(buf, win)
   local o = { noremap = true, silent = true, buffer = buf }
-  vim.keymap.set('n', 'q', function() if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end end, o)
-  vim.keymap.set('t', '<Esc><Esc>',
-    function() if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end end, o)
+  vim.keymap.set('n', 'q', function()
+    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+  end, o)
+  vim.keymap.set('t', '<Esc><Esc>', function()
+    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+  end, o)
 end
 
 -- ── Build environment string from table ───────────────────────────────────────
@@ -116,36 +126,46 @@ function M.execute(opts)
 end
 
 function M._bg(cmd, cwd, title, opts)
-  local output = {}
+  local output  = {}
+  local start   = os.time()
+
+  -- Seed a pending history entry immediately so the console shows it live
+  local pending = {
+    action    = title,
+    action_id = opts.action_id,
+    plugin    = opts.plugin,
+    success   = nil, -- nil = still running
+    output    = output,
+    duration  = 0,
+    cmd       = cmd,
+    timestamp = start,
+  }
+  record(pending)
+  fire_start(pending)
+
   vim.notify('🔨 ' .. title, vim.log.levels.INFO)
-  local start = os.time()
+
   local jid
   jid = vim.fn.jobstart(cmd, {
-    cwd = cwd,
+    cwd             = cwd,
     stdout_buffered = true,
     stderr_buffered = true,
-    on_stdout = function(_, d) vim.list_extend(output, d) end,
-    on_stderr = function(_, d) vim.list_extend(output, d) end,
-    on_exit   = function(_, code)
-      M.jobs[jid] = nil
-      local ok    = code == 0
-      local dur   = os.time() - start
+    on_stdout       = function(_, d) vim.list_extend(output, d) end,
+    on_stderr       = function(_, d) vim.list_extend(output, d) end,
+    on_exit         = function(_, code)
+      M.jobs[jid]      = nil
+      local ok         = code == 0
+      local dur        = os.time() - start
+      -- Update the pending entry in-place so the console reflects final status
+      pending.success  = ok
+      pending.duration = dur
       if ok then
         vim.notify(string.format('✅ %s  (%ds)', title, dur), vim.log.levels.INFO)
       else
         vim.notify(string.format('❌ %s failed  (%ds)', title, dur), vim.log.levels.ERROR)
         M._parse(output, opts.plugin)
       end
-      local entry = {
-        action = title,
-        action_id = opts.action_id,
-        plugin = opts.plugin,
-        success = ok,
-        output = output,
-        duration = dur,
-        cmd = cmd
-      }
-      record(entry)
+      fire(pending)
       if opts.on_exit then pcall(opts.on_exit, ok, output) end
     end,
   })
@@ -167,17 +187,35 @@ function M._term(cmd, cwd, title, tcfg, opts)
   end
   set_win_opts(win)
 
-  local output = {}
-  local start  = os.time()
+  local output  = {}
+  local start   = os.time()
+
+  -- Seed a pending history entry immediately so the console shows it live
+  local pending = {
+    action    = title,
+    action_id = opts.action_id,
+    plugin    = opts.plugin,
+    success   = nil,
+    output    = output,
+    duration  = 0,
+    cmd       = cmd,
+    timestamp = start,
+  }
+  record(pending)
+  fire_start(pending)
+
   local jid
-  jid          = vim.fn.termopen(cmd, {
+  jid = vim.fn.termopen(cmd, {
     cwd       = cwd,
     on_stdout = function(_, d) vim.list_extend(output, d) end,
     on_stderr = function(_, d) vim.list_extend(output, d) end,
     on_exit   = function(_, code)
-      M.jobs[jid] = nil
-      local ok    = code == 0
-      local dur   = os.time() - start
+      M.jobs[jid]      = nil
+      local ok         = code == 0
+      local dur        = os.time() - start
+      -- Update the pending entry in-place
+      pending.success  = ok
+      pending.duration = dur
       if ok then
         if tcfg.close_on_success then
           vim.defer_fn(function()
@@ -189,20 +227,11 @@ function M._term(cmd, cwd, title, tcfg, opts)
         vim.notify(string.format('❌ %s failed  (%ds)', title, dur), vim.log.levels.ERROR)
         M._parse(output, opts.plugin)
       end
-      local entry = {
-        action = title,
-        action_id = opts.action_id,
-        plugin = opts.plugin,
-        success = ok,
-        output = output,
-        duration = dur,
-        cmd = cmd
-      }
-      record(entry)
+      fire(pending)
       if opts.on_exit then pcall(opts.on_exit, ok, output) end
     end,
   })
-  M.jobs[jid]  = { title = title, cmd = cmd, start_time = start, buf = buf, win = win }
+  M.jobs[jid] = { title = title, cmd = cmd, start_time = start, buf = buf, win = win }
   buf_keymaps(buf, win)
   vim.cmd('startinsert')
 end
@@ -212,17 +241,17 @@ function M.execute_sequence(steps, base_opts)
   local idx = 1
   local function nxt()
     if idx > #steps then
-      vim.notify('✅ All tasks completed!', vim.log.levels.INFO); return
+      vim.notify('All tasks completed!', vim.log.levels.INFO); return
     end
     local step = steps[idx]
-    local o = vim.tbl_extend('force', base_opts, {
+    local o    = vim.tbl_extend('force', base_opts, {
       cmd     = step.cmd,
       title   = step.title,
       on_exit = function(ok)
         if ok then
           idx = idx + 1; vim.schedule(nxt)
         else
-          vim.notify('❌ Stopped at: ' .. step.title, vim.log.levels.ERROR)
+          vim.notify('Stopped at: ' .. step.title, vim.log.levels.ERROR)
         end
       end,
     })
@@ -235,7 +264,7 @@ end
 M._watchers = {} -- action_id -> true
 
 function M.execute_watch(opts)
-  local id = opts.action_id or opts.cmd
+  local id        = opts.action_id or opts.cmd
   M._watchers[id] = true
   local function launch()
     local o = vim.tbl_extend('force', opts, {
@@ -281,7 +310,6 @@ function M.stop_last()
     local info = M.jobs[jid]
     vim.fn.jobstop(jid)
     M.jobs[jid] = nil
-    -- also cancel any watcher using same action_id
     for id in pairs(M._watchers) do
       if M._watchers[id] then
         M._watchers[id] = nil; break
@@ -295,8 +323,14 @@ end
 
 function M.running_count() return vim.tbl_count(M.jobs) end
 
+-- ── Running jobs list (for console) ──────────────────────────────────────────
+function M.get_running()
+  local r = {}
+  for _, info in pairs(M.jobs) do r[#r + 1] = info end
+  return r
+end
+
 -- ── Output log viewer ────────────────────────────────────────────────────────
--- Opens the output of a history entry in a scratch split.
 function M.show_output(entry)
   if not entry or not entry.output or #entry.output == 0 then
     vim.notify('No output recorded for this run', vim.log.levels.INFO); return
@@ -328,11 +362,13 @@ end
 -- ── Parser dispatch ──────────────────────────────────────────────────────────
 function M._parse(output, plugin)
   if plugin == 'marvin' then
-    local ok, p = pcall(require, 'marvin.parser'); if ok then
+    local ok, p = pcall(require, 'marvin.parser')
+    if ok then
       p.parse_output(output); return
     end
   end
-  local ok, p = pcall(require, 'jason.parser'); if ok then p.parse_output(output) end
+  local ok, p = pcall(require, 'jason.parser')
+  if ok then p.parse_output(output) end
 end
 
 return M

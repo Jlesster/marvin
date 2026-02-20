@@ -182,26 +182,21 @@ function M.handle_action(id, project)
     -- Run
   elseif id == 'build_run' then
     ex.build_and_run(false)
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'run' then
     ex.run(false)
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'test' then
     ex.test(false)
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'run_submenu' then
     M.show_run_submenu(project); return
 
     -- Build
   elseif id == 'build' then
     ex.build(false)
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'clean_build' then
     runner.execute_sequence(
       { { cmd = ex.get_command('clean', project), title = 'Clean' },
         { cmd = ex.get_command('build', project), title = 'Build' } },
       { cwd = project.root, term_cfg = cfg.terminal, plugin = 'jason', action_id = 'clean_build' })
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'build_submenu' then
     M.show_build_submenu(project); return
 
@@ -234,7 +229,6 @@ function M.handle_action(id, project)
     -- Java
   elseif id == 'mvn_skip_tests' then
     ex.custom('mvn package -DskipTests', 'Build (skip tests)')
-    vim.defer_fn(function() require('jason.console').open() end, 300)
   elseif id == 'mvn_profiles' then
     M.run_with_maven_profile(project)
   elseif id == 'gradle_tasks' then
@@ -263,10 +257,7 @@ function M.handle_action(id, project)
     require('jason.console').open(); return
   elseif id == 'rerun_last' then
     local h = runner.history
-    if h[1] then
-      ex.custom(h[1].cmd, h[1].action)
-      vim.defer_fn(function() require('jason.console').open() end, 300)
-    end
+    if h[1] then ex.custom(h[1].cmd, h[1].action) end
 
     -- Settings
   elseif id == 'settings_submenu' then
@@ -300,7 +291,6 @@ function M.show_run_submenu(project)
       elseif choice.id == 'build_args' then
         ex.build(true)
       end
-      vim.defer_fn(function() require('jason.console').open() end, 400)
     end)
 end
 
@@ -321,7 +311,6 @@ function M.show_build_submenu(project)
       elseif choice.id == 'clean' then
         ex.clean()
       end
-      vim.defer_fn(function() require('jason.console').open() end, 300)
     end)
 end
 
@@ -331,11 +320,11 @@ function M.show_graal_submenu(project)
   local has_ni = graal.native_image_bin() ~= nil
   local items  = {
     {
-      id = 'graal_build_native',
-      icon = '󰱒',
+      id    = 'graal_build_native',
+      icon  = '󰱒',
       label = 'Build Native',
-      desc = 'Compile to native binary',
-      badge = has_ni and '●' or '○ not installed'
+      desc  = 'Compile to native binary',
+      badge = has_ni and '●' or '○ not installed',
     },
     { id = 'graal_run_native', icon = '▶', label = 'Run Native', desc = 'Execute native binary' },
     { id = 'graal_build_run', icon = '󰔷', label = 'Build & Run Native', desc = 'Native build then run' },
@@ -344,10 +333,7 @@ function M.show_graal_submenu(project)
   }
   if not has_ni then
     items[#items + 1] = {
-      id = 'graal_install_ni',
-      icon = '󰚰',
-      label = 'Install native-image',
-      desc = 'gu install native-image'
+      id = 'graal_install_ni', icon = '󰚰', label = 'Install native-image', desc = 'gu install native-image',
     }
   end
   require('jason.ui').select(items, {
@@ -368,9 +354,6 @@ function M.show_graal_submenu(project)
     elseif choice.id == 'graal_install_ni' then
       graal.install_native_image(project)
     end
-    if choice.id ~= 'graal_info' then
-      vim.defer_fn(function() require('jason.console').open() end, 300)
-    end
   end)
 end
 
@@ -378,14 +361,14 @@ end
 function M.show_rust_submenu(project)
   local ex   = require('jason.executor')
   local cmds = {
-    doc = 'cargo doc --open',
-    bench = 'cargo bench',
-    expand = 'cargo expand',
-    update = 'cargo update',
-    outdated = 'cargo outdated',
-    audit = 'cargo audit',
-    tree = 'cargo tree',
-    bloat = 'cargo bloat',
+    doc        = 'cargo doc --open',
+    bench      = 'cargo bench',
+    expand     = 'cargo expand',
+    update     = 'cargo update',
+    outdated   = 'cargo outdated',
+    audit      = 'cargo audit',
+    tree       = 'cargo tree',
+    bloat      = 'cargo bloat',
     flamegraph = 'cargo flamegraph',
   }
   require('jason.ui').select({
@@ -462,9 +445,7 @@ function M.show_cpp_compiler_submenu(project)
     }, { prompt = 'C/C++ Compiler', format_item = function(it) return it.icon .. ' ' .. it.label end },
     function(choice)
       if not choice then return end
-      local function run(c, t)
-        ex.custom(c, t); vim.defer_fn(function() require('jason.console').open() end, 300)
-      end
+      local function run(c, t) ex.custom(c, t) end
       if choice.id == 'cmake_debug' then
         run('cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build', 'CMake Debug')
       elseif choice.id == 'cmake_release' then
@@ -629,7 +610,7 @@ end
 
 -- ── Maven profile picker ──────────────────────────────────────────────────────
 function M.run_with_maven_profile(project)
-  local ok, mp = pcall(require, 'marvin.project')
+  local ok, mp   = pcall(require, 'marvin.project')
   local profiles = ok and mp.get_project() and mp.get_project().info and mp.get_project().info.profiles or {}
   if #profiles == 0 then
     vim.notify('No Maven profiles found in pom.xml', vim.log.levels.INFO); return
@@ -643,7 +624,6 @@ function M.run_with_maven_profile(project)
     function(choice)
       if choice then
         require('jason.executor').custom('mvn install -P' .. choice.id, 'Install (' .. choice.id .. ')')
-        vim.defer_fn(function() require('jason.console').open() end, 300)
       end
     end)
 end
@@ -732,7 +712,7 @@ function M.show_keybindings()
   }, '\n'), 'Normal' } }, true, {})
 end
 
--- ── History viewer (legacy, still accessible via console) ─────────────────────
+-- ── History viewer (legacy, routes to console) ────────────────────────────────
 function M.show_history(project)
   require('jason.console').open()
 end
