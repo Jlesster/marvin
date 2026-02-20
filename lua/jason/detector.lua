@@ -1,70 +1,61 @@
 -- lua/jason/detector.lua
-local M = {}
+-- Project detection with monorepo / multi-root support.
+
+local M           = {}
 
 M.current_project = nil
+M._sub_projects   = nil -- populated when monorepo is detected
 
--- Project type detectors
-local detectors = {
-  -- Java projects
-  maven = function(dir)
-    return vim.fn.filereadable(dir .. '/pom.xml') == 1
-  end,
-
-  gradle = function(dir)
-    return vim.fn.filereadable(dir .. '/build.gradle') == 1
-        or vim.fn.filereadable(dir .. '/build.gradle.kts') == 1
-  end,
-
-  -- Rust projects
-  cargo = function(dir)
-    return vim.fn.filereadable(dir .. '/Cargo.toml') == 1
-  end,
-
-  -- Go projects
-  go_mod = function(dir)
-    return vim.fn.filereadable(dir .. '/go.mod') == 1
-  end,
-
-  -- C/C++ projects
-  cmake = function(dir)
-    return vim.fn.filereadable(dir .. '/CMakeLists.txt') == 1
-  end,
-
-  makefile = function(dir)
-    return vim.fn.filereadable(dir .. '/Makefile') == 1
-        or vim.fn.filereadable(dir .. '/makefile') == 1
-  end,
+local MARKERS     = {
+  maven    = { file = 'pom.xml', language = 'java' },
+  gradle   = { files = { 'build.gradle', 'build.gradle.kts' }, language = 'java' },
+  cargo    = { file = 'Cargo.toml', language = 'rust' },
+  go_mod   = { file = 'go.mod', language = 'go' },
+  cmake    = { file = 'CMakeLists.txt', language = 'cpp' },
+  makefile = { files = { 'Makefile', 'makefile' }, language = 'cpp' },
 }
 
--- Detect project type and root
-function M.detect()
-  local curr_file = vim.api.nvim_buf_get_name(0)
-  local curr_dir = vim.fn.fnamemodify(curr_file, ':h')
+local function probe(dir, marker)
+  if marker.file then
+    return vim.fn.filereadable(dir .. '/' .. marker.file) == 1
+  end
+  for _, f in ipairs(marker.files or {}) do
+    if vim.fn.filereadable(dir .. '/' .. f) == 1 then return true end
+  end
+  return false
+end
 
-  -- Search upwards for project markers
+-- ── Single-project detect ─────────────────────────────────────────────────────
+function M.detect()
+  local curr_dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':h')
+  if curr_dir == '' then curr_dir = vim.fn.getcwd() end
+
   while curr_dir ~= '/' do
-    for project_type, detector_fn in pairs(detectors) do
-      if detector_fn(curr_dir) then
+    for ptype, marker in pairs(MARKERS) do
+      if probe(curr_dir, marker) then
         M.current_project = {
-          root = curr_dir,
-          type = project_type,
-          language = M.get_language(project_type),
+          root     = curr_dir,
+          type     = ptype,
+          language = marker.language,
+          name     = vim.fn.fnamemodify(curr_dir, ':t'),
         }
+        M._sub_projects = nil
         return true
       end
     end
-
     curr_dir = vim.fn.fnamemodify(curr_dir, ':h')
   end
 
-  -- Fallback: single file detection
+  -- Single-file fallback
   local ft = vim.bo.filetype
-  if ft == 'java' or ft == 'rust' or ft == 'go' or ft == 'c' or ft == 'cpp' then
+  if vim.tbl_contains({ 'java', 'rust', 'go', 'c', 'cpp' }, ft) then
+    local file = vim.fn.expand('%:p')
     M.current_project = {
-      root = vim.fn.expand('%:p:h'),
-      type = 'single_file',
+      root     = vim.fn.fnamemodify(file, ':h'),
+      type     = 'single_file',
       language = ft,
-      file = vim.fn.expand('%:p'),
+      file     = file,
+      name     = vim.fn.fnamemodify(file, ':t'),
     }
     return true
   end
@@ -73,93 +64,96 @@ function M.detect()
   return false
 end
 
-function M.get_language(project_type)
-  local type_to_lang = {
-    maven = 'java',
-    gradle = 'java',
-    cargo = 'rust',
-    go_mod = 'go',
-    cmake = 'cpp',
-    makefile = 'cpp',
-    single_file = vim.bo.filetype,
-  }
+-- ── Monorepo / multi-root detect ─────────────────────────────────────────────
+-- Scans up to 2 directory levels under `root` for sub-projects.
+function M.detect_sub_projects(root)
+  root = root or vim.fn.getcwd()
+  local found = {}
 
-  return type_to_lang[project_type] or 'unknown'
+  local function scan(dir, depth)
+    if depth > 2 then return end
+    local ok, entries = pcall(vim.fn.readdir, dir)
+    if not ok then return end
+    for _, name in ipairs(entries) do
+      local full = dir .. '/' .. name
+      if vim.fn.isdirectory(full) == 1 then
+        for ptype, marker in pairs(MARKERS) do
+          if probe(full, marker) then
+            found[#found + 1] = {
+              root     = full,
+              type     = ptype,
+              language = marker.language,
+              name     = name,
+            }
+            -- Don't descend into a found project
+            goto continue
+          end
+        end
+        scan(full, depth + 1)
+        ::continue::
+      end
+    end
+  end
+
+  scan(root, 1)
+  M._sub_projects = #found > 0 and found or nil
+  return M._sub_projects
 end
 
+-- Returns true if the cwd looks like a monorepo (>1 sub-projects at shallow depth).
+function M.is_monorepo()
+  local subs = M.detect_sub_projects(vim.fn.getcwd())
+  return subs and #subs > 1
+end
+
+function M.get_sub_projects() return M._sub_projects end
+
+-- ── Public ────────────────────────────────────────────────────────────────────
 function M.get_project()
-  if not M.current_project then
-    M.detect()
-  end
+  if not M.current_project then M.detect() end
   return M.current_project
 end
 
-function M.validate_environment(project_type)
-  local validators = {
-    maven = function()
-      return M.check_command('mvn', 'Maven')
-    end,
+function M.set_project(p)
+  M.current_project = p
+end
 
-    gradle = function()
-      return M.check_command('gradle', 'Gradle')
-          or M.check_command('./gradlew', 'Gradle Wrapper')
-    end,
+function M.get_language(ptype)
+  return (MARKERS[ptype] or {}).language or vim.bo.filetype or 'unknown'
+end
 
-    cargo = function()
-      return M.check_command('cargo', 'Cargo')
-    end,
+-- ── Tool validators ───────────────────────────────────────────────────────────
+local TOOLS = {
+  maven       = { cmd = 'mvn', name = 'Maven', install = 'https://maven.apache.org/install.html' },
+  gradle      = { cmd = 'gradle', name = 'Gradle', install = 'https://gradle.org/install/' },
+  cargo       = { cmd = 'cargo', name = 'Cargo', install = 'https://rustup.rs' },
+  go_mod      = { cmd = 'go', name = 'Go', install = 'https://go.dev/dl/' },
+  cmake       = { cmd = 'cmake', name = 'CMake', install = 'https://cmake.org/download/' },
+  makefile    = { cmd = 'make', name = 'Make', install = 'sudo apt install build-essential' },
+  single_file = nil,
+}
 
-    go_mod = function()
-      return M.check_command('go', 'Go')
-    end,
+function M.validate_environment(ptype)
+  -- Gradle wrapper doesn't need system gradle
+  if ptype == 'gradle' and vim.fn.filereadable('./gradlew') == 1 then return true end
 
-    cmake = function()
-      return M.check_command('cmake', 'CMake')
-    end,
+  local tool = TOOLS[ptype]
+  if not tool then return true end -- single_file or unknown, let it try
 
-    makefile = function()
-      return M.check_command('make', 'Make')
-    end,
-
-    single_file = function()
-      local ft = vim.bo.filetype
-      if ft == 'java' then
-        return M.check_command('javac', 'Java Compiler')
-      elseif ft == 'rust' then
-        return M.check_command('rustc', 'Rust Compiler')
-      elseif ft == 'go' then
-        return M.check_command('go', 'Go')
-      elseif ft == 'cpp' or ft == 'c' then
-        return M.check_command('g++', 'G++') or M.check_command('gcc', 'GCC')
-      end
-      return false
-    end,
-  }
-
-  local validator = validators[project_type]
-  if not validator then
-    vim.notify('Unknown project type: ' .. project_type, vim.log.levels.ERROR)
+  if vim.fn.executable(tool.cmd) == 0 then
+    vim.notify(
+      string.format('[jason] %s not found.\nInstall: %s', tool.name, tool.install),
+      vim.log.levels.ERROR)
     return false
   end
-
-  return validator()
+  return true
 end
 
 function M.check_command(cmd, name)
-  local handle = io.popen(cmd .. ' --version 2>&1')
-  if not handle then
-    vim.notify(name .. ' is not installed or not in PATH', vim.log.levels.ERROR)
+  if vim.fn.executable(cmd) == 0 then
+    vim.notify(name .. ' not found in PATH', vim.log.levels.ERROR)
     return false
   end
-
-  local result = handle:read('*all')
-  handle:close()
-
-  if result == '' then
-    vim.notify(name .. ' is not installed or not in PATH', vim.log.levels.ERROR)
-    return false
-  end
-
   return true
 end
 

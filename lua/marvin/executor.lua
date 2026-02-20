@@ -1,5 +1,5 @@
 -- lua/marvin/executor.lua
--- Delegates to core.runner. Keeps the same public API.
+-- Marvin only handles Maven execution. All job running goes through core.runner.
 
 local M = {}
 
@@ -8,7 +8,6 @@ function M.run(goal, options)
 
   local project = require('marvin.project')
   if not project.validate_environment() then return end
-
   local proj = project.get_project()
   if not proj then
     vim.notify('No Maven project found', vim.log.levels.ERROR); return
@@ -16,9 +15,7 @@ function M.run(goal, options)
 
   local config = require('marvin').config
   local parts  = { config.maven_command }
-  if options.profile then
-    parts[#parts + 1] = '-P' .. options.profile
-  end
+  if options.profile then parts[#parts + 1] = '-P' .. options.profile end
   parts[#parts + 1] = goal
   local cmd = table.concat(parts, ' ')
 
@@ -28,13 +25,10 @@ function M.run(goal, options)
     title     = 'mvn ' .. goal,
     term_cfg  = config.terminal,
     plugin    = 'marvin',
-    action_id = 'mvn_' .. goal,
+    action_id = 'mvn_' .. goal:gsub('%s+', '_'),
   })
 end
 
--- Stop the last running job (same behaviour as before)
-function M.stop()
-  require('core.runner').stop_last()
-end
+function M.stop() require('core.runner').stop_last() end
 
 return M
