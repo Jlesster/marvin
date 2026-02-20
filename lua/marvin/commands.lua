@@ -1,73 +1,57 @@
+-- lua/marvin/commands.lua
+
 local M = {}
 
 function M.register()
-  vim.api.nvim_create_user_command('Maven', function(opts)
-    M.interactive_menu()
-  end, {
-    desc = 'Open Maven Menu',
-  })
+  local function cmd(name, fn, opts)
+    vim.api.nvim_create_user_command(name, fn, opts or {})
+  end
 
-  vim.api.nvim_create_user_command('MavenDashboard', function()
-    require('marvin.dashboard').show()
-  end, {
-    desc = 'Open Marvin Dashboard',
-  })
+  -- Dashboard
+  cmd('Marvin', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin dashboard' })
+  cmd('MarvinDashboard', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin dashboard' })
 
-  vim.api.nvim_create_user_command('JavaNew', function()
-    require('marvin.java_creator').show_menu()
-  end, { desc = 'Create new Java file' })
+  -- Maven lifecycle
+  cmd('MavenCompile', function() require('marvin.executor').run('compile') end, { desc = 'mvn compile' })
+  cmd('MavenTest', function() require('marvin.executor').run('test') end, { desc = 'mvn test' })
+  cmd('MavenPackage', function() require('marvin.executor').run('package') end, { desc = 'mvn package' })
+  cmd('MavenInstall', function() require('marvin.executor').run('install') end, { desc = 'mvn install' })
+  cmd('MavenVerify', function() require('marvin.executor').run('verify') end, { desc = 'mvn verify' })
+  cmd('MavenClean', function() require('marvin.executor').run('clean') end, { desc = 'mvn clean' })
+  cmd('MavenCleanInstall', function() require('marvin.executor').run('clean install') end, { desc = 'mvn clean install' })
 
-  vim.api.nvim_create_user_command('MavenExec', function(opts)
-    M.execute_goal(opts.args)
-  end, {
-    nargs = '+',
-    complete = M.complete_goals,
-    desc = 'Execute Maven Goal',
-  })
+  -- Arbitrary goal
+  cmd('MavenExec', function(o)
+    require('marvin.executor').run(o.args)
+  end, { nargs = '+', complete = M.complete_goals, desc = 'Run any Maven goal' })
 
-  vim.api.nvim_create_user_command('MavenClean', function()
-    M.execute_goal('clean')
-  end, { desc = 'Run mvn clean' })
+  -- Inspect
+  cmd('MavenDepTree', function() require('marvin.executor').run('dependency:tree') end, { desc = 'mvn dependency:tree' })
+  cmd('MavenDepAnalyze', function() require('marvin.executor').run('dependency:analyze') end,
+    { desc = 'mvn dependency:analyze' })
+  cmd('MavenEffectivePom', function() require('marvin.executor').run('help:effective-pom') end,
+    { desc = 'mvn help:effective-pom' })
 
-  vim.api.nvim_create_user_command('MavenTest', function()
-    M.execute_goal('test')
-  end, { desc = 'Run mvn test' })
+  -- File creation
+  cmd('JavaNew', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin (create Java file)' })
+  cmd('MavenNew', function() require('marvin.generator').create_project() end,
+    { desc = 'New Maven project from archetype' })
 
-  vim.api.nvim_create_user_command('MavenPackage', function()
-    M.execute_goal('package')
-  end, { desc = 'Run mvn package' })
-
-  -- Project generation
-  vim.api.nvim_create_user_command('MavenNew', function()
-    local generator = require('marvin.generator')
-    generator.create_project()
-  end, { desc = 'Create new Maven project' })
+  -- Stop
+  cmd('MavenStop', function() require('marvin.executor').stop() end, { desc = 'Stop running Maven job' })
 end
 
-function M.interactive_menu()
-  local ui = require('marvin.ui')
-  ui.show_goal_menu()
-end
-
-function M.execute_goal(goal)
-  local executor = require('marvin.executor') -- FIXED: Added quotes
-  executor.run(goal)
-end
-
-function M.complete_goals(arg_lead, cmd_line, cursor_pos)
+function M.complete_goals()
   return {
-    'clean',
-    'compile', -- FIXED: Was 'complile'
-    'test',
-    'test-compile',
-    'package',
-    'install',
-    'deploy',
-    'site',
-    'verify',
-    'dependency:tree',
-    'dependency:list',
-    'dependency:resolve',
+    'clean', 'compile', 'test', 'package', 'verify', 'install', 'deploy',
+    'clean install', 'clean package',
+    'dependency:tree', 'dependency:analyze', 'dependency:resolve',
+    'help:effective-pom', 'help:effective-settings', 'help:describe',
+    'versions:display-dependency-updates',
+    'spotless:apply', 'spotless:check',
+    'checkstyle:check', 'pmd:check',
+    'spring-boot:run',
+    'native:compile',
   }
 end
 

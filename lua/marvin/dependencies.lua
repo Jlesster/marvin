@@ -1,580 +1,407 @@
+-- lua/marvin/dependencies.lua
+-- All pom.xml manipulation: adding deps, plugins, setting properties.
+
 local M = {}
 
--- Read entire POM file
+-- ── POM I/O ───────────────────────────────────────────────────────────────────
+local function pom_path() return vim.fn.getcwd() .. '/pom.xml' end
+
 local function read_pom()
-  local pom_path = vim.fn.getcwd() .. '/pom.xml'
-  if vim.fn.filereadable(pom_path) == 0 then
-    return nil, "No pom.xml found in current directory"
-  end
-  return vim.fn.readfile(pom_path), nil
+  local p = pom_path()
+  if vim.fn.filereadable(p) == 0 then return nil, 'No pom.xml in current directory' end
+  return vim.fn.readfile(p), nil
 end
 
--- Write POM file
 local function write_pom(lines)
-  local pom_path = vim.fn.getcwd() .. '/pom.xml'
-  vim.fn.writefile(lines, pom_path)
-  return true
+  vim.fn.writefile(lines, pom_path())
 end
 
--- Find insertion point for properties
-local function find_properties_section(lines)
+local function notify(msg, level)
+  require('marvin.ui').notify(msg, level)
+end
+
+-- ── XML helpers ───────────────────────────────────────────────────────────────
+local function find_tag(lines, open, close)
   for i, line in ipairs(lines) do
-    if line:match('<%s*properties%s*>') then
-      -- Find closing tag
+    if line:match(open) then
       for j = i + 1, #lines do
-        if lines[j]:match('<%s*/properties%s*>') then
-          return i, j
-        end
+        if lines[j]:match(close) then return i, j end
       end
     end
   end
   return nil, nil
 end
 
--- Find or create properties section
-local function ensure_properties_section(lines)
-  local start_idx, end_idx = find_properties_section(lines)
-
-  if start_idx then
-    return lines, start_idx, end_idx
-  end
-
-  -- Create properties section after <version>
-  for i, line in ipairs(lines) do
-    if line:match('<%s*version%s*>') and not line:match('<%s*parent%s*>') then
-      table.insert(lines, i + 1, '')
-      table.insert(lines, i + 2, '  <properties>')
-      table.insert(lines, i + 3, '    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>')
-      table.insert(lines, i + 4, '  </properties>')
-      return lines, i + 2, i + 4
-    end
-  end
-
-  return lines, nil, nil
-end
-
--- Add properties
-local function add_properties(lines, properties)
-  lines, start_idx, end_idx = ensure_properties_section(lines)
-
-  if not start_idx then
-    return lines, false
-  end
-
-  -- Insert properties before closing tag
-  for i = #properties, 1, -1 do
-    table.insert(lines, end_idx, '    ' .. properties[i])
-  end
-
-  return lines, true
-end
-
--- Find dependencies section
-local function find_dependencies_section(lines)
-  local in_dep_mgmt = false
-  local depth = 0
-
-  for i, line in ipairs(lines) do
-    if line:match('<%s*dependencyManagement%s*>') then
-      in_dep_mgmt = true
-      depth = depth + 1
-    elseif line:match('<%s*/dependencyManagement%s*>') then
-      depth = depth - 1
-      if depth == 0 then
-        in_dep_mgmt = false
-      end
-    elseif line:match('<%s*dependencies%s*>') and not in_dep_mgmt then
-      -- Find closing tag
-      for j = i + 1, #lines do
-        if lines[j]:match('<%s*/dependencies%s*>') then
-          return i, j
-        end
-      end
-    end
-  end
-  return nil, nil
-end
-
--- Create dependencies section
-local function ensure_dependencies_section(lines)
-  local start_idx, end_idx = find_dependencies_section(lines)
-
-  if start_idx then
-    return lines, start_idx, end_idx
-  end
-
-  -- Create dependencies section before </project>
+local function ensure_section(lines, open_pat, close_pat, insert_before_pat, indent, open_tag, close_tag)
+  local s, e = find_tag(lines, open_pat, close_pat)
+  if s then return lines, s, e end
   for i = #lines, 1, -1 do
-    if lines[i]:match('<%s*/project%s*>') then
+    if lines[i]:match(insert_before_pat) then
+      table.insert(lines, i, indent .. close_tag)
+      table.insert(lines, i, indent .. open_tag)
       table.insert(lines, i, '')
-      table.insert(lines, i, '  </dependencies>')
-      table.insert(lines, i, '  <dependencies>')
-      table.insert(lines, i, '')
-      return lines, i + 2, i + 3
+      return lines, i + 1, i + 2
     end
   end
-
   return lines, nil, nil
 end
 
--- Add dependencies
-local function add_dependencies(lines, dependencies)
-  lines, start_idx, end_idx = ensure_dependencies_section(lines)
-
-  if not start_idx then
-    return lines, false
+local function insert_before(lines, idx, new_lines)
+  for i = #new_lines, 1, -1 do
+    table.insert(lines, idx, new_lines[i])
   end
+end
 
-  -- Insert dependencies before closing tag
-  for i = #dependencies, 1, -1 do
-    table.insert(lines, end_idx, '    ' .. dependencies[i])
+-- ── Properties ────────────────────────────────────────────────────────────────
+local function ensure_properties(lines)
+  return ensure_section(lines,
+    '<%s*properties%s*>', '<%s*/properties%s*>',
+    '<%s*/project%s*>', '  ', '<properties>', '</properties>')
+end
+
+local function set_property(lines, key, value)
+  lines, s, e = ensure_properties(lines)
+  if not s then return lines, false end
+  local tag_o = '<' .. key .. '>'
+  local tag_c = '</' .. key .. '>'
+  for i = s + 1, e - 1 do
+    if lines[i]:match(vim.pesc(tag_o)) then
+      lines[i] = '    ' .. tag_o .. value .. tag_c
+      return lines, true
+    end
   end
-
+  table.insert(lines, e, '    ' .. tag_o .. value .. tag_c)
   return lines, true
 end
 
--- Find or create dependencyManagement section
-local function ensure_dependency_management(lines)
+-- ── Dependencies section ──────────────────────────────────────────────────────
+local function ensure_deps(lines)
+  -- Skip dependencyManagement's <dependencies>
+  local in_mgmt = false
   for i, line in ipairs(lines) do
-    if line:match('<%s*dependencyManagement%s*>') then
+    if line:match('<%s*dependencyManagement%s*>') then in_mgmt = true end
+    if line:match('<%s*/dependencyManagement%s*>') then in_mgmt = false end
+    if not in_mgmt and line:match('<%s*dependencies%s*>') then
       for j = i + 1, #lines do
-        if lines[j]:match('<%s*dependencies%s*>') then
-          for k = j + 1, #lines do
-            if lines[k]:match('<%s*/dependencies%s*>') then
-              return lines, j, k
-            end
-          end
-        end
+        if lines[j]:match('<%s*/dependencies%s*>') then return lines, i, j end
       end
     end
   end
-
-  -- Create it before <dependencies>
-  for i, line in ipairs(lines) do
-    if line:match('<%s*dependencies%s*>') then
-      table.insert(lines, i, '')
-      table.insert(lines, i, '  </dependencyManagement>')
-      table.insert(lines, i, '    </dependencies>')
-      table.insert(lines, i, '')
-      table.insert(lines, i, '    <dependencies>')
-      table.insert(lines, i, '  <dependencyManagement>')
-      table.insert(lines, i, '')
-      return lines, i + 2, i + 3
-    end
-  end
-
-  return lines, nil, nil
+  return ensure_section(lines,
+    '<%s*dependencies%s*>', '<%s*/dependencies%s*>',
+    '<%s*/project%s*>', '  ', '<dependencies>', '</dependencies>')
 end
 
--- Add Jackson JSON library
+local function add_deps(lines, dep_lines)
+  lines, s, e = ensure_deps(lines)
+  if not s then return lines, false end
+  insert_before(lines, e, dep_lines)
+  return lines, true
+end
+
+-- ── Dependency check helper ───────────────────────────────────────────────────
+local function already_has(lines, artifact_id)
+  local content = table.concat(lines, '\n')
+  return content:match('<artifactId>%s*' .. vim.pesc(artifact_id) .. '%s*</artifactId>') ~= nil
+end
+
+-- ── Build plugins section ─────────────────────────────────────────────────────
+local function ensure_build_plugins(lines)
+  lines, bs, be = ensure_section(lines,
+    '<%s*build%s*>', '<%s*/build%s*>',
+    '<%s*/project%s*>', '  ', '<build>', '</build>')
+  if not bs then return lines, nil, nil end
+  return ensure_section(lines,
+    '<%s*plugins%s*>', '<%s*/plugins%s*>',
+    '<%s*/build%s*>', '    ', '<plugins>', '</plugins>')
+end
+
+-- ── Public: add dependencies ─────────────────────────────────────────────────
 function M.add_jackson()
-  local ui = require('marvin.ui')
-  local lines, err = read_pom()
-
-  if not lines then
-    ui.notify(err, vim.log.levels.ERROR)
-    return false
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
   end
-
-  -- Check if already exists
-  local content = table.concat(lines, '\n')
-  if content:match('jackson%-databind') then
-    ui.notify('Jackson is already in pom.xml', vim.log.levels.WARN)
-    return false
+  if already_has(lines, 'jackson-databind') then
+    notify('Jackson already in pom.xml', vim.log.levels.WARN); return
   end
-
-  ui.notify('Adding Jackson JSON library...', vim.log.levels.INFO)
-
-  local deps = {
+  lines, ok = add_deps(lines, {
     '',
-    '<!-- Jackson JSON Library -->',
-    '<dependency>',
-    '  <groupId>com.fasterxml.jackson.core</groupId>',
-    '  <artifactId>jackson-databind</artifactId>',
-    '  <version>2.18.2</version>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>com.fasterxml.jackson.core</groupId>',
-    '  <artifactId>jackson-core</artifactId>',
-    '  <version>2.18.2</version>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>com.fasterxml.jackson.core</groupId>',
-    '  <artifactId>jackson-annotations</artifactId>',
-    '  <version>2.18.2</version>',
-    '</dependency>',
-  }
-
-  lines, success = add_dependencies(lines, deps)
-
-  if success then
-    write_pom(lines)
-    ui.notify('✅ Jackson JSON library added successfully!', vim.log.levels.INFO)
-    return true
+    '    <!-- Jackson JSON -->',
+    '    <dependency>',
+    '      <groupId>com.fasterxml.jackson.core</groupId>',
+    '      <artifactId>jackson-databind</artifactId>',
+    '      <version>2.18.2</version>',
+    '    </dependency>',
+    '    <dependency>',
+    '      <groupId>com.fasterxml.jackson.core</groupId>',
+    '      <artifactId>jackson-core</artifactId>',
+    '      <version>2.18.2</version>',
+    '    </dependency>',
+    '    <dependency>',
+    '      <groupId>com.fasterxml.jackson.core</groupId>',
+    '      <artifactId>jackson-annotations</artifactId>',
+    '      <version>2.18.2</version>',
+    '    </dependency>',
+  })
+  if ok then
+    write_pom(lines); notify('✅ Jackson added', vim.log.levels.INFO)
   else
-    ui.notify('Failed to add Jackson', vim.log.levels.ERROR)
-    return false
+    notify('Failed to add Jackson', vim.log.levels.ERROR)
   end
 end
 
--- Add LWJGL library
+function M.add_spring()
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
+  end
+  if already_has(lines, 'spring-boot-starter') then
+    notify('Spring Boot already in pom.xml', vim.log.levels.WARN); return
+  end
+  -- Also add spring-boot-maven-plugin
+  lines, ok = add_deps(lines, {
+    '',
+    '    <!-- Spring Boot -->',
+    '    <dependency>',
+    '      <groupId>org.springframework.boot</groupId>',
+    '      <artifactId>spring-boot-starter</artifactId>',
+    '      <version>3.4.1</version>',
+    '    </dependency>',
+    '    <dependency>',
+    '      <groupId>org.springframework.boot</groupId>',
+    '      <artifactId>spring-boot-starter-test</artifactId>',
+    '      <version>3.4.1</version>',
+    '      <scope>test</scope>',
+    '    </dependency>',
+  })
+  if ok then
+    write_pom(lines); notify('✅ Spring Boot added', vim.log.levels.INFO)
+  else
+    notify('Failed to add Spring Boot', vim.log.levels.ERROR)
+  end
+end
+
+function M.add_lombok()
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
+  end
+  if already_has(lines, 'lombok') then
+    notify('Lombok already in pom.xml', vim.log.levels.WARN); return
+  end
+  lines, ok = add_deps(lines, {
+    '',
+    '    <!-- Lombok -->',
+    '    <dependency>',
+    '      <groupId>org.projectlombok</groupId>',
+    '      <artifactId>lombok</artifactId>',
+    '      <version>1.18.36</version>',
+    '      <scope>provided</scope>',
+    '    </dependency>',
+  })
+  if ok then
+    write_pom(lines); notify('✅ Lombok added', vim.log.levels.INFO)
+  else
+    notify('Failed to add Lombok', vim.log.levels.ERROR)
+  end
+end
+
+function M.add_junit5()
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
+  end
+  if already_has(lines, 'junit-jupiter') then
+    notify('JUnit 5 already in pom.xml', vim.log.levels.WARN); return
+  end
+  lines, ok = add_deps(lines, {
+    '',
+    '    <!-- JUnit 5 -->',
+    '    <dependency>',
+    '      <groupId>org.junit.jupiter</groupId>',
+    '      <artifactId>junit-jupiter</artifactId>',
+    '      <version>5.11.4</version>',
+    '      <scope>test</scope>',
+    '    </dependency>',
+  })
+  if ok then
+    write_pom(lines); notify('✅ JUnit 5 added', vim.log.levels.INFO)
+  else
+    notify('Failed to add JUnit 5', vim.log.levels.ERROR)
+  end
+end
+
+function M.add_mockito()
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
+  end
+  if already_has(lines, 'mockito-core') then
+    notify('Mockito already in pom.xml', vim.log.levels.WARN); return
+  end
+  lines, ok = add_deps(lines, {
+    '',
+    '    <!-- Mockito -->',
+    '    <dependency>',
+    '      <groupId>org.mockito</groupId>',
+    '      <artifactId>mockito-core</artifactId>',
+    '      <version>5.15.2</version>',
+    '      <scope>test</scope>',
+    '    </dependency>',
+  })
+  if ok then
+    write_pom(lines); notify('✅ Mockito added', vim.log.levels.INFO)
+  else
+    notify('Failed to add Mockito', vim.log.levels.ERROR)
+  end
+end
+
 function M.add_lwjgl()
-  local ui = require('marvin.ui')
-  local lines, err = read_pom()
-
-  if not lines then
-    ui.notify(err, vim.log.levels.ERROR)
-    return false
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
   end
-
-  -- Check if already exists
-  local content = table.concat(lines, '\n')
-  if content:match('lwjgl%-bom') or content:match('lwjgl</artifactId>') then
-    ui.notify('LWJGL is already in pom.xml', vim.log.levels.WARN)
-    return false
+  if already_has(lines, 'lwjgl-bom') or already_has(lines, 'lwjgl') then
+    notify('LWJGL already in pom.xml', vim.log.levels.WARN); return
   end
-
-  ui.notify('Adding LWJGL library with full platform support...', vim.log.levels.INFO)
-
-  -- Add properties
-  local props = {
-    '<lwjgl.version>3.3.6</lwjgl.version>',
-    '<joml.version>1.10.8</joml.version>',
-  }
-
-  lines, success = add_properties(lines, props)
-  if not success then
-    ui.notify('Failed to add LWJGL properties', vim.log.levels.ERROR)
-    return false
+  lines, ok = set_property(lines, 'lwjgl.version', '3.3.6')
+  lines, ok = set_property(lines, 'joml.version', '1.10.8')
+  -- BOM in dependencyManagement
+  lines, s, e = ensure_section(lines,
+    '<%s*dependencyManagement%s*>.*<%s*dependencies%s*>',
+    '<%s*/dependencyManagement', '<%s*dependencies%s*>', '    ',
+    '<dependencyManagement><dependencies>', '</dependencies></dependencyManagement>')
+  if s then
+    insert_before(lines, e, {
+      '      <dependency>',
+      '        <groupId>org.lwjgl</groupId>',
+      '        <artifactId>lwjgl-bom</artifactId>',
+      '        <version>${lwjgl.version}</version>',
+      '        <scope>import</scope>',
+      '        <type>pom</type>',
+      '      </dependency>',
+    })
   end
-
-  -- Add dependency management
-  lines, start_idx, end_idx = ensure_dependency_management(lines)
-  if start_idx then
-    local mgmt = {
-      '',
-      '<!-- LWJGL BOM -->',
-      '<dependency>',
-      '  <groupId>org.lwjgl</groupId>',
-      '  <artifactId>lwjgl-bom</artifactId>',
-      '  <version>${lwjgl.version}</version>',
-      '  <scope>import</scope>',
-      '  <type>pom</type>',
-      '</dependency>',
-    }
-
-    for i = #mgmt, 1, -1 do
-      table.insert(lines, end_idx, '      ' .. mgmt[i])
+  -- Core + natives
+  local native_classifiers = { 'natives-linux', 'natives-windows', 'natives-macos' }
+  local modules = { 'lwjgl', 'lwjgl-glfw', 'lwjgl-opengl', 'lwjgl-stb' }
+  local dep_lines = { '', '    <!-- LWJGL -->' }
+  for _, mod in ipairs(modules) do
+    dep_lines[#dep_lines + 1] = '    <dependency>'
+    dep_lines[#dep_lines + 1] = '      <groupId>org.lwjgl</groupId>'
+    dep_lines[#dep_lines + 1] = '      <artifactId>' .. mod .. '</artifactId>'
+    dep_lines[#dep_lines + 1] = '    </dependency>'
+    for _, cls in ipairs(native_classifiers) do
+      dep_lines[#dep_lines + 1] = '    <dependency>'
+      dep_lines[#dep_lines + 1] = '      <groupId>org.lwjgl</groupId>'
+      dep_lines[#dep_lines + 1] = '      <artifactId>' .. mod .. '</artifactId>'
+      dep_lines[#dep_lines + 1] = '      <classifier>' .. cls .. '</classifier>'
+      dep_lines[#dep_lines + 1] = '    </dependency>'
     end
   end
-
-  -- Add core dependencies
-  local deps = {
-    '',
-    '<!-- LWJGL Core Modules -->',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl</artifactId>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-glfw</artifactId>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-opengl</artifactId>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-stb</artifactId>',
-    '</dependency>',
-    '',
-    '<!-- LWJGL Natives - Linux -->',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl</artifactId>',
-    '  <classifier>natives-linux</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-glfw</artifactId>',
-    '  <classifier>natives-linux</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-opengl</artifactId>',
-    '  <classifier>natives-linux</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-stb</artifactId>',
-    '  <classifier>natives-linux</classifier>',
-    '</dependency>',
-    '',
-    '<!-- LWJGL Natives - Windows -->',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl</artifactId>',
-    '  <classifier>natives-windows</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-glfw</artifactId>',
-    '  <classifier>natives-windows</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-opengl</artifactId>',
-    '  <classifier>natives-windows</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-stb</artifactId>',
-    '  <classifier>natives-windows</classifier>',
-    '</dependency>',
-    '',
-    '<!-- LWJGL Natives - macOS -->',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl</artifactId>',
-    '  <classifier>natives-macos</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-glfw</artifactId>',
-    '  <classifier>natives-macos</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-opengl</artifactId>',
-    '  <classifier>natives-macos</classifier>',
-    '</dependency>',
-    '<dependency>',
-    '  <groupId>org.lwjgl</groupId>',
-    '  <artifactId>lwjgl-stb</artifactId>',
-    '  <classifier>natives-macos</classifier>',
-    '</dependency>',
-    '',
-    '<!-- JOML Math Library -->',
-    '<dependency>',
-    '  <groupId>org.joml</groupId>',
-    '  <artifactId>joml</artifactId>',
-    '  <version>${joml.version}</version>',
-    '</dependency>',
-  }
-
-  lines, success = add_dependencies(lines, deps)
-
-  if success then
-    write_pom(lines)
-    ui.notify('✅ LWJGL library added with Linux, Windows, and macOS support!', vim.log.levels.INFO)
-    return true
+  dep_lines[#dep_lines + 1] = '    <!-- JOML -->'
+  dep_lines[#dep_lines + 1] = '    <dependency>'
+  dep_lines[#dep_lines + 1] = '      <groupId>org.joml</groupId>'
+  dep_lines[#dep_lines + 1] = '      <artifactId>joml</artifactId>'
+  dep_lines[#dep_lines + 1] = '      <version>${joml.version}</version>'
+  dep_lines[#dep_lines + 1] = '    </dependency>'
+  lines, ok = add_deps(lines, dep_lines)
+  if ok then
+    write_pom(lines); notify('✅ LWJGL + JOML added (Linux/Windows/macOS natives)', vim.log.levels.INFO)
   else
-    ui.notify('Failed to add LWJGL', vim.log.levels.ERROR)
-    return false
+    notify('Failed to add LWJGL', vim.log.levels.ERROR)
   end
 end
 
--- Add Maven Assembly Plugin for Fat JARs
 function M.add_assembly_plugin()
-  local ui = require('marvin.ui')
-  local lines, err = read_pom()
-
-  if not lines then
-    ui.notify(err, vim.log.levels.ERROR)
-    return false
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
   end
-
-  -- Check if already exists
-  local content = table.concat(lines, '\n')
-  if content:match('maven%-assembly%-plugin') then
-    ui.notify('Maven Assembly Plugin is already configured', vim.log.levels.WARN)
-    return false
+  if table.concat(lines, '\n'):match('maven%-assembly%-plugin') then
+    notify('Assembly plugin already configured', vim.log.levels.WARN); return
   end
-
-  ui.notify('Adding Maven Assembly Plugin...', vim.log.levels.INFO)
-
-  -- Find main class
   local main_class = M.find_main_class() or 'com.example.Main'
-
-  -- Find or create build section
-  local build_start, build_end = nil, nil
-  for i, line in ipairs(lines) do
-    if line:match('<%s*build%s*>') then
-      build_start = i
-      for j = i + 1, #lines do
-        if lines[j]:match('<%s*/build%s*>') then
-          build_end = j
-          break
-        end
-      end
-      break
-    end
+  lines, ps, pe = ensure_build_plugins(lines)
+  if not ps then
+    notify('Failed to locate <plugins>', vim.log.levels.ERROR); return
   end
-
-  -- Create build section if it doesn't exist
-  if not build_start then
-    for i = #lines, 1, -1 do
-      if lines[i]:match('<%s*/project%s*>') then
-        table.insert(lines, i, '')
-        table.insert(lines, i, '  </build>')
-        table.insert(lines, i, '  <build>')
-        table.insert(lines, i, '')
-        build_start = i + 2
-        build_end = i + 3
-        break
-      end
-    end
-  end
-
-  -- Find or create plugins section
-  local plugins_start, plugins_end = nil, nil
-  for i = build_start, build_end do
-    if lines[i]:match('<%s*plugins%s*>') then
-      plugins_start = i
-      for j = i + 1, build_end do
-        if lines[j]:match('<%s*/plugins%s*>') then
-          plugins_end = j
-          break
-        end
-      end
-      break
-    end
-  end
-
-  if not plugins_start then
-    table.insert(lines, build_end, '    </plugins>')
-    table.insert(lines, build_end, '    <plugins>')
-    plugins_start = build_end
-    plugins_end = build_end + 1
-  end
-
-  -- Add assembly plugin
-  local plugin = {
-    '',
-    '  <!-- Maven Assembly Plugin for Fat JAR -->',
-    '  <plugin>',
-    '    <groupId>org.apache.maven.plugins</groupId>',
-    '    <artifactId>maven-assembly-plugin</artifactId>',
-    '    <version>3.7.1</version>',
-    '    <configuration>',
-    '      <archive>',
-    '        <manifest>',
-    '          <mainClass>' .. main_class .. '</mainClass>',
-    '        </manifest>',
-    '      </archive>',
-    '      <descriptorRefs>',
-    '        <descriptorRef>jar-with-dependencies</descriptorRef>',
-    '      </descriptorRefs>',
-    '    </configuration>',
-    '    <executions>',
-    '      <execution>',
-    '        <id>make-assembly</id>',
-    '        <phase>package</phase>',
-    '        <goals>',
-    '          <goal>single</goal>',
-    '        </goals>',
-    '      </execution>',
-    '    </executions>',
-    '  </plugin>',
-  }
-
-  for i = #plugin, 1, -1 do
-    table.insert(lines, plugins_end, '      ' .. plugin[i])
-  end
-
+  insert_before(lines, pe, {
+    '      <!-- Fat JAR -->',
+    '      <plugin>',
+    '        <groupId>org.apache.maven.plugins</groupId>',
+    '        <artifactId>maven-assembly-plugin</artifactId>',
+    '        <version>3.7.1</version>',
+    '        <configuration>',
+    '          <archive><manifest>',
+    '            <mainClass>' .. main_class .. '</mainClass>',
+    '          </manifest></archive>',
+    '          <descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>',
+    '        </configuration>',
+    '        <executions><execution>',
+    '          <id>make-assembly</id><phase>package</phase>',
+    '          <goals><goal>single</goal></goals>',
+    '        </execution></executions>',
+    '      </plugin>',
+  })
   write_pom(lines)
-  ui.notify('✅ Maven Assembly Plugin added! Main class: ' .. main_class, vim.log.levels.INFO)
-  return true
+  notify('✅ Assembly plugin added  (main class: ' .. main_class .. ')', vim.log.levels.INFO)
 end
 
--- Find main class in project
-function M.find_main_class()
-  local java_files = vim.fn.globpath(vim.fn.getcwd() .. '/src/main/java', '**/*.java', false, true)
-
-  for _, file in ipairs(java_files) do
-    local lines = vim.fn.readfile(file)
-    local package_name = nil
-    local class_name = nil
-    local has_main = false
-
-    for _, line in ipairs(lines) do
-      if line:match('^%s*package%s+') then
-        package_name = line:match('package%s+([%w%.]+)')
-      end
-      if line:match('^%s*public%s+class%s+') then
-        class_name = line:match('class%s+(%w+)')
-      end
-      if line:match('public%s+static%s+void%s+main') then
-        has_main = true
-      end
-
-      if package_name and class_name and has_main then
-        return package_name .. '.' .. class_name
-      end
-    end
+function M.add_spotless()
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
   end
-
-  return nil
+  if table.concat(lines, '\n'):match('spotless') then
+    notify('Spotless already configured', vim.log.levels.WARN); return
+  end
+  lines, ps, pe = ensure_build_plugins(lines)
+  if not ps then
+    notify('Failed to locate <plugins>', vim.log.levels.ERROR); return
+  end
+  insert_before(lines, pe, {
+    '      <!-- Spotless formatter -->',
+    '      <plugin>',
+    '        <groupId>com.diffplug.spotless</groupId>',
+    '        <artifactId>spotless-maven-plugin</artifactId>',
+    '        <version>2.43.0</version>',
+    '        <configuration>',
+    '          <java><googleJavaFormat/></java>',
+    '        </configuration>',
+    '      </plugin>',
+  })
+  write_pom(lines)
+  notify('✅ Spotless added  (run: mvn spotless:apply)', vim.log.levels.INFO)
 end
 
+-- ── Public: properties ────────────────────────────────────────────────────────
 function M.set_java_version(version)
-  local ui = require('marvin.ui')
-  local lines, err = read_pom()
-
-  if not lines then
-    ui.notify(err, vim.log.levels.ERROR)
-    return false
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
   end
-
   version = tostring(version)
+  lines, _ = set_property(lines, 'maven.compiler.source', version)
+  lines, _ = set_property(lines, 'maven.compiler.target', version)
+  write_pom(lines)
+  notify('✅ Java version set to ' .. version, vim.log.levels.INFO)
+end
 
-  -- Properties to add/update
-  local maven_compiler_props = {
-    '<maven.compiler.source>' .. version .. '</maven.compiler.source>',
-    '<maven.compiler.target>' .. version .. '</maven.compiler.target>',
-  }
+function M.set_encoding(enc)
+  local lines, err = read_pom(); if not lines then
+    notify(err, vim.log.levels.ERROR); return
+  end
+  lines, _ = set_property(lines, 'project.build.sourceEncoding', enc)
+  lines, _ = set_property(lines, 'project.reporting.outputEncoding', enc)
+  write_pom(lines)
+  notify('✅ Encoding set to ' .. enc, vim.log.levels.INFO)
+end
 
-  -- Check if properties exist
-  local start_idx, end_idx = find_properties_section(lines)
-
-  if start_idx then
-    -- Check if maven.compiler properties already exist
-    local has_source = false
-    local has_target = false
-
-    for i = start_idx, end_idx do
-      if lines[i]:match('maven%.compiler%.source') then
-        -- Update existing
-        lines[i] = '    <maven.compiler.source>' .. version .. '</maven.compiler.source>'
-        has_source = true
-      elseif lines[i]:match('maven%.compiler%.target') then
-        -- Update existing
-        lines[i] = '    <maven.compiler.target>' .. version .. '</maven.compiler.target>'
-        has_target = true
-      end
-    end
-
-    -- Add missing properties
-    if not has_source then
-      table.insert(lines, end_idx, '    <maven.compiler.source>' .. version .. '</maven.compiler.source>')
-      end_idx = end_idx + 1
-    end
-    if not has_target then
-      table.insert(lines, end_idx, '    <maven.compiler.target>' .. version .. '</maven.compiler.target>')
-    end
-  else
-    -- No properties section, create it with Java version
-    lines, success = add_properties(lines, maven_compiler_props)
-    if not success then
-      ui.notify('Failed to set Java version', vim.log.levels.ERROR)
-      return false
+-- ── Util: find main class ─────────────────────────────────────────────────────
+function M.find_main_class()
+  local files = vim.fn.globpath(vim.fn.getcwd() .. '/src/main/java', '**/*.java', false, true)
+  for _, file in ipairs(files) do
+    local pkg, cls, has_main
+    for _, line in ipairs(vim.fn.readfile(file)) do
+      if line:match('^%s*package%s+') then pkg = line:match('package%s+([%w%.]+)') end
+      if line:match('^%s*public%s+class%s+') then cls = line:match('class%s+(%w+)') end
+      if line:match('public%s+static%s+void%s+main') then has_main = true end
+      if pkg and cls and has_main then return pkg .. '.' .. cls end
     end
   end
-
-  write_pom(lines)
-  ui.notify('✅ Java version set to ' .. version, vim.log.levels.INFO)
-  return true
 end
 
 return M
