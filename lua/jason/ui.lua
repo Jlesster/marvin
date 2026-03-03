@@ -1,752 +1,864 @@
--- lua/jason/ui.lua
+-- lua/jason/dashboard.lua
+
 local M = {}
-M.backend = nil
 
-local C = {
-  bg       = '#1e1e2e',
-  bg2      = '#181825',
-  bg3      = '#11111b',
-  surface0 = '#313244',
-  surface1 = '#45475a',
-  surface2 = '#585b70',
-  text     = '#cdd6f4',
-  sub1     = '#bac2de',
-  sub0     = '#a6adc8',
-  ov0      = '#6c7086',
-  ov1      = '#7f849c',
-  blue     = '#89b4fa',
-  mauve    = '#cba6f7',
-  lavender = '#b4befe',
-  green    = '#a6e3a1',
-  yellow   = '#f9e2af',
-  peach    = '#fab387',
-  red      = '#f38ba8',
-  sky      = '#89dceb',
-  teal     = '#94e2d5',
-  pink     = '#f5c2e7',
-}
-
-local function setup_highlights()
-  local function hl(n, o) vim.api.nvim_set_hl(0, n, o) end
-  hl('JasonWin', { bg = C.bg, fg = C.text })
-  hl('JasonBorder', { fg = C.surface1, bg = C.bg })
-  hl('JasonTitle', { fg = C.mauve, bold = true })
-  hl('JasonCursorLine', { bg = C.surface0, fg = C.text })
-  hl('JasonSelected', { bg = C.mauve, fg = C.bg, bold = true })
-  hl('JasonItem', { fg = C.sub1 })
-  hl('JasonItemIcon', { fg = C.text })
-  hl('JasonDesc', { fg = C.ov0 })
-  hl('JasonSepLine', { fg = C.surface1 })
-  hl('JasonSepLabel', { fg = C.ov1, italic = true })
-  hl('JasonSearch', { fg = C.sky, bold = true })
-  hl('JasonSearchBox', { fg = C.ov0 })
-  hl('JasonFooter', { fg = C.ov0 })
-  hl('JasonFooterKey', { fg = C.peach, bold = true })
-  hl('JasonBadge', { fg = C.yellow })
-  hl('JasonPrevWin', { bg = C.bg3, fg = C.text })
-  hl('JasonPrevBorder', { fg = C.surface0, bg = C.bg3 })
-  hl('JasonPrevTitle', { fg = C.blue, bold = true })
-  hl('JasonPrevHdr', { fg = C.blue, bold = true })
-  hl('JasonPrevSep', { fg = C.surface1 })
-  hl('JasonGitHash', { fg = C.mauve })
-  hl('JasonGitDate', { fg = C.ov0 })
-  hl('JasonGitAuthor', { fg = C.peach })
-  hl('JasonGitMsg', { fg = C.sub1 })
-  hl('JasonBranch', { fg = C.green, bold = true })
-  hl('JasonDirty', { fg = C.yellow })
-  hl('JasonFileDir', { fg = C.blue })
-  hl('JasonFileNorm', { fg = C.sub0 })
-  hl('JasonFileExe', { fg = C.green })
-  hl('JasonDiffAdd', { fg = C.green })
-  hl('JasonDiffDel', { fg = C.red })
-  hl('JasonDiffMod', { fg = C.yellow })
-  hl('JasonTreeConn', { fg = C.surface2 })
-end
-
-function M.init()
-  local cfg = require('jason').config
-  M.backend = cfg.ui_backend == 'auto' and M.detect_backend() or cfg.ui_backend
-  setup_highlights()
-end
-
-function M.detect_backend()
-  if pcall(require, 'snacks') then
-    return 'snacks'
-  elseif pcall(require, 'dressing') then
-    return 'dressing'
+-- ── Formatting helpers ────────────────────────────────────────────────────────
+local function ago(ts)
+  local d = os.time() - ts
+  if d < 60 then
+    return 'just now'
+  elseif d < 3600 then
+    return math.floor(d / 60) .. 'm ago'
+  elseif d < 86400 then
+    return math.floor(d / 3600) .. 'h ago'
   else
-    return 'builtin'
+    return math.floor(d / 86400) .. 'd ago'
   end
 end
 
--- Fuzzy match
-local function fuzzy(str, pat)
-  if pat == '' then return true, 0 end
-  str = str:lower(); pat = pat:lower()
-  local sc, s, p, con = 0, 1, 1, 0
-  while p <= #pat and s <= #str do
-    if str:sub(s, s) == pat:sub(p, p) then
-      sc = sc + 1 + con * 5; con = con + 1; p = p + 1
-    else
-      con = 0
-    end
-    s = s + 1
-  end
-  if p > #pat then
-    if str:sub(1, #pat) == pat then sc = sc + 20 end
-    return true, sc
-  end
-  return false, 0
+local function dur_str(s)
+  if not s then return '' end
+  return s < 60 and (s .. 's') or (math.floor(s / 60) .. 'm' .. (s % 60) .. 's')
 end
 
--- Git helpers
-local function git(root, args)
-  local out = vim.fn.system(
-    'git -C ' .. vim.fn.shellescape(root) .. ' ' .. args .. ' 2>/dev/null')
-  return vim.v.shell_error == 0, vim.trim(out)
+local function status_badge(action_id)
+  local e = require('core.runner').get_last_status(action_id)
+  if not e then return nil end
+  return (e.success and '✓' or '✗') .. ' ' .. ago(e.timestamp) .. ' (' .. dur_str(e.duration) .. ')'
 end
 
--- File tree (neo-tree style ASCII connectors)
-local SKIP = {
-  ['.git'] = true,
-  ['node_modules'] = true,
-  ['target'] = true,
-  ['build'] = true,
-  ['.gradle'] = true,
-  ['__pycache__'] = true,
-  ['.idea'] = true,
-  ['.vscode'] = true,
-  ['dist'] = true,
-  ['out'] = true,
-}
-
-local function build_tree(dir, prefix, depth, max_depth, results)
-  results = results or {}
-  if depth > max_depth then return results end
-
-  local ok, ents = pcall(vim.fn.readdir, dir)
-  if not ok or type(ents) ~= 'table' then return results end
-
-  table.sort(ents, function(a, b)
-    local ad = vim.fn.isdirectory(dir .. '/' .. a) == 1
-    local bd = vim.fn.isdirectory(dir .. '/' .. b) == 1
-    local ah = a:sub(1, 1) == '.'
-    local bh = b:sub(1, 1) == '.'
-    if ah ~= bh then return bh end
-    if ad ~= bd then return ad end
-    return a < b
-  end)
-
-  local visible = {}
-  for _, name in ipairs(ents) do
-    if not SKIP[name] and (depth == 1 or name:sub(1, 1) ~= '.') then
-      visible[#visible + 1] = name
-    end
-  end
-
-  local cap = 12
-  local shown = 0
-  for i, name in ipairs(visible) do
-    if shown >= cap then
-      local conn = prefix .. '+- '
-      results[#results + 1] = {
-        text     = conn .. '... ' .. (#visible - cap) .. ' more',
-        conn_end = #conn,
-        is_dir   = false,
-        is_exe   = false,
-        overflow = true,
-      }
-      break
-    end
-    shown                 = shown + 1
-
-    local is_last         = (i == #visible or shown == cap)
-    local fp              = dir .. '/' .. name
-    local is_dir          = vim.fn.isdirectory(fp) == 1
-    local is_exe          = not is_dir and vim.fn.executable(fp) == 1
-    local icon            = is_dir and '[d] ' or '[f] '
-    local branch          = is_last and '`- ' or '+- '
-    local conn            = prefix .. branch
-    local text            = conn .. icon .. name .. (is_dir and '/' or '')
-
-    results[#results + 1] = {
-      text     = text,
-      conn_end = #conn,
-      is_dir   = is_dir,
-      is_exe   = is_exe,
-    }
-
-    if is_dir and depth < max_depth then
-      local child_pfx = prefix .. (is_last and '  ' or '| ')
-      build_tree(fp, child_pfx, depth + 1, max_depth, results)
-    end
-  end
-
-  return results
+local function sep(label) return { id = 'sep_' .. label, label = label, is_separator = true } end
+local function item(id, icon, label, desc, badge)
+  return { id = id, icon = icon, label = label, desc = desc, badge = badge }
 end
 
--- Build preview content
-local function build_preview(project, width)
-  local root = project and project.root
-  local lines, hls = {}, {}
+-- ── Menu builder ──────────────────────────────────────────────────────────────
+function M.build_menu(project)
+  local cfg    = require('jason').config
+  local lang   = project.language
+  local ptype  = project.type
+  local runner = require('core.runner')
+  local items  = {}
+  local function add(t) items[#items + 1] = t end
 
-  local function add(ln, specs)
-    lines[#lines + 1] = ln
-    if specs then
-      for _, s in ipairs(specs) do
-        hls[#hls + 1] = { line = #lines - 1, hl = s[1], cs = s[2], ce = s[3] }
-      end
+  local njobs = runner.running_count()
+  if njobs > 0 then
+    add(sep('Running'))
+    add(item('stop_all', '󰓛', 'Stop All Jobs', njobs .. ' job(s) running', '● ' .. njobs))
+    add(item('stop_last', '󰓛', 'Stop Last Job', 'Cancel most recent task'))
+  end
+
+  local task_items = require('jason.tasks').to_menu_items(
+    require('jason.tasks').load(project.root))
+  if #task_items > 0 then
+    add(sep('Tasks'))
+    for _, t in ipairs(task_items) do add(t) end
+  end
+
+  add(sep('Run'))
+  add(item('build_run', '▶', 'Build & Run', 'Compile then execute', status_badge('build_run')))
+  add(item('run', '󰐊', 'Run', 'Execute without building', status_badge('run')))
+  add(item('test', '󰙨', 'Test', 'Run full test suite', status_badge('test')))
+  add(item('run_submenu', '󰒓', 'Run Options…', 'Args, filter, build+run w/ args'))
+
+  add(sep('Build'))
+  add(item('build', '󰔷', 'Build', 'Compile sources', status_badge('build')))
+  add(item('clean_build', '󰑕', 'Clean & Build', 'Wipe artifacts then compile'))
+  add(item('build_submenu', '󰒓', 'Build Options…', 'Package, install, skip tests, more'))
+
+  add(sep('Quality'))
+  add(item('fmt', '󰉣', 'Format', 'Auto-format all source files'))
+  add(item('lint', '󰁨', 'Lint', 'Run linter / static analysis'))
+  add(item('quality_submenu', '󰦉', 'More…', 'Coverage, audit, vet…'))
+
+  if lang == 'rust' then
+    add(sep('Rust'))
+    add(item('check', '󰄬', 'Check', 'Type-check without codegen'))
+    local cur = cfg.rust.profile
+    add(item('toggle_profile', '󰒓', 'Profile: ' .. cur,
+      'Switch to ' .. (cur == 'release' and 'dev' or 'release'),
+      cur == 'release' and '󰓅 release' or '󰁌 dev'))
+    add(item('rust_submenu', '󰒓', 'Rust Tools…', 'Doc, bench, audit, flamegraph'))
+  elseif lang == 'go' then
+    add(sep('Go'))
+    add(item('vet', '󰁨', 'Vet', 'go vet ./...'))
+    add(item('coverage', '󰦉', 'Coverage', 'go test -cover ./...'))
+    add(item('go_submenu', '󰒓', 'Go Tools…', 'Race, mod tidy, godoc, generate'))
+  elseif lang == 'java' then
+    add(sep('Java'))
+    if ptype == 'maven' then
+      add(item('mvn_submenu', '󰒓', 'Maven…', 'Build, profiles, project creation'))
+      add(item('mvn_skip_tests', '󰒭', 'Build (skip tests)', 'mvn package -DskipTests'))
+    elseif ptype == 'gradle' then
+      add(item('gradle_tasks', '󰒓', 'Gradle Tasks', './gradlew tasks'))
+      add(item('gradle_wrapper', '󰚰', 'Wrapper Update', './gradlew wrapper --upgrade-gradle-properties'))
     end
+    add(item('open_marvin', '󱁆', 'Open Marvin…', 'POM, archetypes, deps, file gen'))
+    add(item('graal_submenu', '󰱒', 'GraalVM…', 'Native image build, run, agent'))
+  elseif lang == 'cpp' then
+    add(sep('C/C++'))
+    add(item('cpp_compiler_submenu', '󰒓', 'Compiler…', 'Debug, Release, ASAN, TSAN, LTO'))
+    add(item('cpp_tools', '󰒓', 'Tools…', 'Tidy, cppcheck, valgrind, assembly'))
   end
 
-  local function hr()
-    add(string.rep('-', width), { { 'JasonPrevSep', 0, -1 } })
+  if require('jason.detector').is_monorepo() then
+    add(sep('Workspace'))
+    add(item('switch_project', '󰒓', 'Switch Sub-project', 'Pick a project in this workspace'))
   end
 
-  local function hdr(t)
-    add(t, { { 'JasonPrevHdr', 0, -1 } })
+  add(sep('Console'))
+  local h = require('core.runner').history
+  add(item('open_console', '󰋚', 'Task Console',
+    #h > 0 and (#h .. ' entries') or 'No runs yet',
+    #h > 0 and (h[1].success and '✓' or '✗') or nil))
+  if #h > 0 then
+    local last = h[1]
+    add(item('rerun_last', '󰑕', 'Rerun Last',
+      last.action .. ' · ' .. ago(last.timestamp),
+      last.success and '✓' or '✗'))
   end
 
-  local IND = ' '
+  add(sep('Settings'))
+  add(item('settings_submenu', '󰒓', 'Settings…', 'Terminal, args, keybindings'))
 
-  if not root then
-    add(IND .. 'No project.', { { 'JasonDesc', 0, -1 } })
-    return lines, hls
-  end
-
-  -- Branch line (no leading blank)
-  local gok, branch = git(root, 'branch --show-current')
-  local is_git = gok and branch ~= ''
-
-  if is_git then
-    local _, st = git(root, 'status --porcelain')
-    local dirty = st ~= ''
-    local sign  = dirty and ' ~ dirty' or ' + clean'
-    local shl   = dirty and 'JasonDirty' or 'JasonBranch'
-    local pfx   = IND .. '@ '
-    local ln    = pfx .. branch .. sign
-    add(ln, {
-      { 'JasonDesc',   0,              #pfx },
-      { 'JasonBranch', #pfx,           #pfx + #branch },
-      { shl,           #pfx + #branch, -1 },
-    })
-  else
-    add(IND .. 'Not a git repository', { { 'JasonDesc', 0, -1 } })
-  end
-
-  if is_git then
-    -- Commits (max 5, tighter format)
-    hdr('Commits'); hr()
-    local ok2, log = git(root, 'log --format=">>>%h|%ar|%an|%s" -5')
-    if ok2 and log ~= '' then
-      for entry in log:gmatch('>>>([^\n]+)') do
-        local h, d, a, m = entry:match('([^|]+)|([^|]+)|([^|]+)|(.+)')
-        if h then
-          -- Shorten date: "2 weeks ago" -> "2w", "31 hours ago" -> "31h"
-          local ds  = d:gsub(' hours? ago', 'h'):gsub(' days? ago', 'd')
-              :gsub(' weeks? ago', 'w'):gsub(' months? ago', 'mo')
-              :gsub(' minutes? ago', 'm'):gsub('just now', 'now')
-          ds        = ds:sub(1, 5)
-          -- Author: first 7 chars
-          local as  = a:sub(1, 7)
-          local pre = IND .. h .. ' ' .. ds .. ' ' .. as .. ' '
-          local pw  = vim.fn.strdisplaywidth(pre)
-          local ms  = m:sub(1, math.max(2, width - pw - 1))
-          local p1  = #IND
-          local p2  = p1 + #h
-          local p3  = p2 + 1 + #ds
-          local p4  = p3 + 1 + #as
-          add(pre .. ms, {
-            { 'JasonGitHash',   p1,     p2 },
-            { 'JasonGitDate',   p2 + 1, p3 },
-            { 'JasonGitAuthor', p3 + 1, p4 },
-            { 'JasonGitMsg',    p4 + 1, -1 },
-          })
-        end
-      end
-    else
-      add(IND .. '(no commits)', { { 'JasonDesc', 0, -1 } })
-    end
-
-    -- Diff stat (no blank line before)
-    local _, diff = git(root, 'diff --stat HEAD')
-    if diff ~= '' then
-      hdr('Changes'); hr()
-      for ln in (diff .. '\n'):gmatch('([^\n]+)\n') do
-        local t = vim.trim(ln)
-        if t ~= '' then
-          local hg
-          if t:match('^%d+%s+files?') then
-            hg = 'JasonDesc'
-          elseif t:match('%+') and t:match('%-') then
-            hg = 'JasonDiffMod'
-          elseif t:match('%+') then
-            hg = 'JasonDiffAdd'
-          else
-            hg = 'JasonDiffDel'
-          end
-          add(IND .. t, { { hg, 0, -1 } })
-        end
-      end
-    end
-  end
-
-  hdr('Files'); hr()
-
-  -- .gitignore entry if it exists
-  local gitignore = root .. '/.gitignore'
-  if vim.fn.filereadable(gitignore) == 1 then
-    add(IND .. '[f] .gitignore', { { 'JasonFileNorm', 0, -1 } })
-  end
-
-  -- Tree rooted at src/
-  local src = root .. '/src'
-  local tree = vim.fn.isdirectory(src) == 1
-      and build_tree(src, IND, 1, 4)
-      or {}
-
-  -- Prepend a synthetic src/ root entry if it exists
-  if vim.fn.isdirectory(src) == 1 then
-    add(IND .. '[d] src/', { { 'JasonFileDir', 0, -1 } })
-    -- indent the tree one level so it hangs under src/
-    for _, node in ipairs(tree) do
-      node.text     = '  ' .. node.text
-      node.conn_end = node.conn_end + 2
-    end
-  end
-
-  for _, node in ipairs(tree) do
-    local ge = node.conn_end
-    if node.overflow then
-      add(node.text, { { 'JasonDesc', 0, -1 } })
-    elseif node.is_dir then
-      add(node.text, { { 'JasonTreeConn', 0, ge }, { 'JasonFileDir', ge, -1 } })
-    elseif node.is_exe then
-      add(node.text, { { 'JasonTreeConn', 0, ge }, { 'JasonFileExe', ge, -1 } })
-    else
-      add(node.text, { { 'JasonTreeConn', 0, ge }, { 'JasonFileNorm', ge, -1 } })
-    end
-  end
-
-  return lines, hls
+  return items
 end
 
--- Main select
-function M.select(items, opts, callback)
-  opts                = opts or {}
-  local prompt        = opts.prompt or 'Select'
-  local enable_search = opts.enable_search ~= false
-  local show_preview  = opts.show_preview == true
-  local project       = opts.project
-  local format_fn     = opts.format_item or function(item)
-    return type(item) == 'table' and (item.label or tostring(item)) or tostring(item)
+-- ── Show ──────────────────────────────────────────────────────────────────────
+function M.show(project)
+  project = project or require('jason.detector').get_project()
+  if not project then
+    vim.notify('No project detected', vim.log.levels.WARN); return
   end
 
-  local all           = {}
-  for i, item in ipairs(items) do
-    all[i] = {
-      idx     = i,
-      item    = item,
-      display = format_fn(item),
-      desc    = type(item) == 'table' and item.desc or nil,
-      badge   = type(item) == 'table' and item.badge or nil,
-      is_sep  = type(item) == 'table' and (item.is_separator == true) or false,
-    }
-  end
+  local branch = vim.trim(vim.fn.system(
+    'git -C ' .. vim.fn.shellescape(project.root) .. ' branch --show-current 2>/dev/null'))
+  local dirty  = branch ~= '' and
+      vim.trim(vim.fn.system('git -C ' .. vim.fn.shellescape(project.root) ..
+        ' status --porcelain 2>/dev/null')) ~= ''
+  local pname  = project.name or vim.fn.fnamemodify(project.root, ':t')
+  local prompt = pname .. ' [' .. project.language:upper() .. ']'
+      .. (dirty and ' ●' or '')
+      .. (branch ~= '' and ('  ' .. branch) or '')
 
-  local vis     = vim.deepcopy(all)
-  local search  = ''
-  local screen  = vim.api.nvim_list_uis()[1]
-
-  -- Layout
-  local PREV_W  = show_preview and 48 or 0
-  local LIST_W  = math.min(80, math.floor(screen.width * 0.55))
-  local TOTAL_W = LIST_W + (show_preview and PREV_W + 1 or 0)
-  TOTAL_W       = math.min(TOTAL_W, screen.width - 4)
-  if show_preview then PREV_W = TOTAL_W - LIST_W - 1 end
-  local INNER = LIST_W - 4
-
-  local function content_lines(v)
-    local n = #v
-    n = n + (enable_search and 4 or 1)
-    n = n + 5
-    return n
-  end
-
-  local function win_h()
-    return math.max(14, math.min(content_lines(vis), math.floor(screen.height * 0.82)))
-  end
-
-  local WIN_H = win_h()
-  local ROW   = math.floor((screen.height - WIN_H) / 2)
-  local COL   = math.floor((screen.width - TOTAL_W) / 2)
-
-  -- Buffers
-  local lbuf  = vim.api.nvim_create_buf(false, true)
-  local pbuf  = show_preview and vim.api.nvim_create_buf(false, true) or nil
-
-  local function ibuf(b)
-    vim.api.nvim_set_option_value('buftype', 'nofile', { buf = b })
-    vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = b })
-    vim.api.nvim_set_option_value('swapfile', false, { buf = b })
-    vim.api.nvim_set_option_value('modifiable', false, { buf = b })
-  end
-  ibuf(lbuf)
-  if pbuf then ibuf(pbuf) end
-
-  -- Windows
-  local lwin = vim.api.nvim_open_win(lbuf, true, {
-    relative  = 'editor',
-    width     = LIST_W,
-    height    = WIN_H,
-    row       = ROW,
-    col       = COL,
-    style     = 'minimal',
-    zindex    = 50,
-    border    = 'single',
-    title     = { { ' ' .. prompt .. ' ', 'JasonTitle' } },
-    title_pos = 'left',
-  })
-
-  vim.api.nvim_set_option_value('winhl',
-    'Normal:JasonWin,FloatBorder:JasonBorder',
-    { win = lwin })
-  for k, v in pairs({
-    cursorline = false,
-    wrap = false, number = false, relativenumber = false,
-    signcolumn = 'no', scrolloff = 0,
-  }) do
-    vim.api.nvim_set_option_value(k, v, { win = lwin })
-  end
-
-  -- Hide the real cursor while the menu is open, restore on close
-  local saved_guicursor = vim.o.guicursor
-  vim.api.nvim_set_hl(0, 'JasonHiddenCursor', { fg = C.bg, bg = C.bg, blend = 100 })
-  vim.o.guicursor = 'a:JasonHiddenCursor'
-  vim.api.nvim_create_autocmd('WinLeave', {
-    buffer   = lbuf,
-    once     = true,
-    callback = function()
-      vim.o.guicursor = saved_guicursor
+  require('jason.ui').select(M.build_menu(project), {
+    prompt        = prompt,
+    project       = project,
+    show_preview  = true,
+    enable_search = true,
+    format_item   = function(it)
+      if it.is_separator then return it.label end
+      return (it.icon and it.icon .. ' ' or '') .. it.label
     end,
-  })
+  }, function(choice)
+    if choice then M.handle_action(choice.id, project) end
+  end)
+end
 
-  local pwin = nil
-  if pbuf then
-    pwin = vim.api.nvim_open_win(pbuf, false, {
-      relative  = 'editor',
-      width     = PREV_W,
-      height    = WIN_H,
-      row       = ROW,
-      col       = COL + LIST_W + 1,
-      style     = 'minimal',
-      zindex    = 50,
-      border    = 'single',
-      title     = { { ' Project ', 'JasonPrevTitle' } },
-      title_pos = 'center',
-    })
-    vim.api.nvim_set_option_value('winhl',
-      'Normal:JasonPrevWin,FloatBorder:JasonPrevBorder', { win = pwin })
-    for k, v in pairs({
-      wrap = false, number = false, relativenumber = false, scrolloff = 0,
-    }) do
-      vim.api.nvim_set_option_value(k, v, { win = pwin })
+-- ── Action handler ────────────────────────────────────────────────────────────
+function M.handle_action(id, project)
+  if not id then return end
+  if require('jason.tasks').handle_action(id, project) then return end
+
+  local ex     = require('jason.executor')
+  local cfg    = require('jason').config
+  local runner = require('core.runner')
+
+  -- back helper: re-opens the main dashboard
+  local function back() M.show(project) end
+
+  if id == 'stop_all' then
+    runner.stop_all(); return
+  elseif id == 'stop_last' then
+    runner.stop_last(); return
+  elseif id == 'build_run' then
+    ex.build_and_run(false)
+  elseif id == 'run' then
+    ex.run(false)
+  elseif id == 'test' then
+    ex.test(false)
+  elseif id == 'run_submenu' then
+    M.show_run_submenu(project); return
+  elseif id == 'build' then
+    ex.build(false)
+  elseif id == 'clean_build' then
+    runner.execute_sequence(
+      { { cmd = ex.get_command('clean', project), title = 'Clean' },
+        { cmd = ex.get_command('build', project), title = 'Build' } },
+      { cwd = project.root, term_cfg = cfg.terminal, plugin = 'jason', action_id = 'clean_build' })
+  elseif id == 'build_submenu' then
+    M.show_build_submenu(project); return
+  elseif id == 'fmt' then
+    ex.fmt()
+  elseif id == 'lint' then
+    ex.lint()
+  elseif id == 'quality_submenu' then
+    M.show_quality_menu(project); return
+
+    -- Rust
+  elseif id == 'check' then
+    ex.custom('cargo check', 'Check')
+  elseif id == 'toggle_profile' then
+    cfg.rust.profile = cfg.rust.profile == 'release' and 'dev' or 'release'
+    vim.notify('Rust profile → ' .. cfg.rust.profile, vim.log.levels.INFO)
+    vim.defer_fn(back, 50); return
+  elseif id == 'rust_submenu' then
+    M.show_rust_submenu(project); return
+
+    -- Go
+  elseif id == 'vet' then
+    ex.custom('go vet ./...', 'Vet')
+  elseif id == 'coverage' then
+    ex.custom('go test -cover ./...', 'Coverage')
+  elseif id == 'go_submenu' then
+    M.show_go_submenu(project); return
+
+    -- Java / Maven
+  elseif id == 'mvn_submenu' then
+    M.show_mvn_submenu(project); return
+  elseif id == 'mvn_skip_tests' then
+    ex.custom('mvn package -DskipTests', 'Build (skip tests)')
+  elseif id == 'mvn_profiles' then
+    M.run_with_maven_profile(project)
+  elseif id == 'gradle_tasks' then
+    ex.custom('./gradlew tasks', 'Tasks')
+  elseif id == 'gradle_wrapper' then
+    ex.custom('./gradlew wrapper --upgrade-gradle-properties', 'Wrapper')
+  elseif id == 'open_marvin' then
+    local ok, m = pcall(require, 'marvin.dashboard')
+    if ok then m.show() else vim.notify('Marvin not installed', vim.log.levels.WARN) end
+    return
+  elseif id == 'graal_submenu' then
+    M.show_graal_submenu(project); return
+
+    -- C/C++
+  elseif id == 'cpp_compiler_submenu' then
+    M.show_cpp_compiler_submenu(project); return
+  elseif id == 'cpp_tools' then
+    M.show_cpp_tools(project); return
+
+    -- Workspace
+  elseif id == 'switch_project' then
+    M.show_project_picker(); return
+
+    -- Console
+  elseif id == 'open_console' then
+    require('jason.console').open(); return
+  elseif id == 'rerun_last' then
+    local h = runner.history
+    if h[1] then ex.custom(h[1].cmd, h[1].action) end
+
+    -- Settings
+  elseif id == 'settings_submenu' then
+    M.show_settings_submenu(project); return
+  elseif id == 'terminal_settings' then
+    M.show_terminal_settings()
+  elseif id == 'env_settings' then
+    M.show_env_settings(project)
+  elseif id == 'keybindings' then
+    M.show_keybindings()
+  end
+end
+
+-- ── Run sub-menu ──────────────────────────────────────────────────────────────
+function M.show_run_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+    { id = 'build_run_args', icon = '▶', label = 'Build & Run…', desc = 'Prompt for run args' },
+    { id = 'run_args', icon = '󰐊', label = 'Run with Args…', desc = 'Prompt for arguments' },
+    { id = 'test_filter', icon = '󰙨', label = 'Test (filter)…', desc = 'Run matching tests only' },
+    { id = 'build_args', icon = '󰔷', label = 'Build with Args…', desc = 'Pass extra compiler flags' },
+  }, {
+    prompt      = 'Run Options',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'build_run_args' then
+      ex.build_and_run(true)
+    elseif choice.id == 'run_args' then
+      ex.run(true)
+    elseif choice.id == 'test_filter' then
+      ex.test(true)
+    elseif choice.id == 'build_args' then
+      ex.build(true)
     end
+  end)
+end
+
+-- ── Build sub-menu ────────────────────────────────────────────────────────────
+function M.show_build_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+    { id = 'package', icon = '󰏗', label = 'Package', desc = 'Build distributable output' },
+    { id = 'install', icon = '󰇚', label = 'Install', desc = 'Install to system / local repo' },
+    { id = 'clean', icon = '󰃢', label = 'Clean', desc = 'Remove build artifacts' },
+  }, {
+    prompt      = 'Build Options',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'package' then
+      ex.package()
+    elseif choice.id == 'install' then
+      ex.install()
+    elseif choice.id == 'clean' then
+      ex.clean()
+    end
+  end)
+end
+
+-- ── Maven sub-menu ────────────────────────────────────────────────────────────
+function M.show_mvn_submenu(project)
+  local ui = require('jason.ui')
+  ui.select({
+    { label = 'Project Creation', is_separator = true },
+    {
+      id    = 'mvn_new_quickstart',
+      icon  = '󰬷',
+      label = 'New Java App',
+      desc  = 'maven-archetype-quickstart',
+    },
+    {
+      id    = 'mvn_new_webapp',
+      icon  = '󰖟',
+      label = 'New Web App',
+      desc  = 'maven-archetype-webapp',
+    },
+    {
+      id    = 'mvn_new_archetype',
+      icon  = '󰒓',
+      label = 'New from Archetype…',
+      desc  = 'Search Maven Central archetypes',
+    },
+
+    { label = 'Build', is_separator = true },
+    { id = 'mvn_skip_tests', icon = '󰒭', label = 'Build (skip tests)', desc = 'mvn package -DskipTests' },
+    { id = 'mvn_profiles', icon = '󰒓', label = 'Run with Profile…', desc = 'Pick an active profile' },
+  }, {
+    prompt      = 'Maven',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'mvn_new_quickstart' then
+      M.mvn_new_project(project, 'quickstart')
+    elseif choice.id == 'mvn_new_webapp' then
+      M.mvn_new_project(project, 'webapp')
+    elseif choice.id == 'mvn_new_archetype' then
+      M.mvn_new_project(project, 'custom')
+    elseif choice.id == 'mvn_skip_tests' then
+      require('jason.executor').custom('mvn package -DskipTests', 'Build (skip tests)')
+    elseif choice.id == 'mvn_profiles' then
+      M.run_with_maven_profile(project)
+    end
+  end)
+end
+
+-- ── Maven project creation wizard ────────────────────────────────────────────
+-- Prompts for groupId / artifactId / version then runs mvn archetype:generate.
+-- 'kind' is 'quickstart' | 'webapp' | 'custom'
+function M.mvn_new_project(project, kind)
+  local ui = require('jason.ui')
+  local ex = require('jason.executor')
+
+  local archetypes = {
+    quickstart = {
+      groupId    = 'org.apache.maven.archetypes',
+      artifactId = 'maven-archetype-quickstart',
+      version    = '1.5',
+      label      = 'Quickstart (Java App)',
+    },
+    webapp = {
+      groupId    = 'org.apache.maven.archetypes',
+      artifactId = 'maven-archetype-webapp',
+      version    = '1.5',
+      label      = 'Webapp (WAR)',
+    },
+  }
+
+  local function run_wizard(arch_gid, arch_aid, arch_ver)
+    -- Step 1: groupId
+    ui.input({ prompt = '󰬷 Project groupId', default = 'com.example' }, function(gid)
+      if not gid or gid == '' then return end
+      -- Step 2: artifactId
+      ui.input({ prompt = '󰏗 Project artifactId', default = 'my-app' }, function(aid)
+        if not aid or aid == '' then return end
+        -- Step 3: version
+        ui.input({ prompt = '󰓾 Version', default = '1.0-SNAPSHOT' }, function(ver)
+          if not ver or ver == '' then return end
+          -- Step 4: output directory (defaults to sibling of current project root)
+          local default_dir = vim.fn.fnamemodify(project.root, ':h')
+          ui.input({ prompt = '󰉋 Parent Directory', default = default_dir }, function(parent)
+            if not parent or parent == '' then return end
+
+            local cmd = table.concat({
+              'mvn archetype:generate',
+              '-DinteractiveMode=false',
+              '-DarchetypeGroupId=' .. arch_gid,
+              '-DarchetypeArtifactId=' .. arch_aid,
+              '-DarchetypeVersion=' .. arch_ver,
+              '-DgroupId=' .. gid,
+              '-DartifactId=' .. aid,
+              '-Dversion=' .. ver,
+            }, ' ')
+
+            ex.execute(cmd, parent, 'New Maven Project: ' .. aid)
+            vim.notify(
+              string.format('[Maven] Creating %s in %s', aid, parent),
+              vim.log.levels.INFO)
+          end)
+        end)
+      end)
+    end)
   end
 
-  -- State
-  local ns      = vim.api.nvim_create_namespace('jason_list')
-  local sel_pos = 1 -- rank among selectables (1-based, never counts separators)
-  local vt      = 1 -- view_top: rank of the first visible selectable
-
-  -- Number of selectable (non-separator) items in vis[]
-  local function sel_total()
-    local n = 0
-    for _, f in ipairs(vis) do if not f.is_sep then n = n + 1 end end
-    return n
-  end
-
-  -- How many item rows fit between header and footer
-  local function visible_rows()
-    local header = enable_search and 4 or 1
-    local footer = 5
-    return math.max(1, WIN_H - header - footer)
-  end
-
-  -- Render
-  local function redraw()
-    local lines, hls = {}, {}
-    local VR         = visible_rows()
-    local total      = sel_total()
-
-    -- Clamp sel_pos and vt
-    sel_pos          = math.max(1, math.min(sel_pos, math.max(1, total)))
-    if sel_pos < vt then vt = sel_pos end
-    if sel_pos > vt + VR - 1 then vt = sel_pos - VR + 1 end
-    vt = math.max(1, vt)
-
-    local function ahl(l, h, cs, ce)
-      hls[#hls + 1] = { line = l, hl = h, cs = cs, ce = ce }
-    end
-
-    if enable_search then
-      lines[#lines + 1] = ''
-      if search == '' then
-        lines[#lines + 1] = '  _'
-        ahl(#lines - 1, 'JasonSearchBox', 0, -1)
-      else
-        lines[#lines + 1] = '  ' .. search .. '_'
-        ahl(#lines - 1, 'JasonSearch', 0, -1)
-      end
-      lines[#lines + 1] = string.rep('-', LIST_W)
-      ahl(#lines - 1, 'JasonSepLine', 0, -1)
-      lines[#lines + 1] = ''
-    else
-      lines[#lines + 1] = ''
-    end
-
-    -- Desc alignment
-    local max_lw = 0
-    for _, f in ipairs(vis) do
-      if not f.is_sep and f.desc then
-        max_lw = math.max(max_lw, vim.fn.strdisplaywidth(f.display) + 4)
-      end
-    end
-    local desc_col = math.min(max_lw, math.floor(INNER * 0.55))
-
-    if #vis == 0 then
-      lines[#lines + 1] = ''
-      lines[#lines + 1] = '  No matches found'
-      ahl(#lines - 1, 'JasonDesc', 0, -1)
-    else
-      local view_end  = math.min(vt + VR - 1, total)
-      local show_up   = vt > 1
-      local show_down = view_end < total
-
-      local rank      = 0
-
-      for _, f in ipairs(vis) do
-        if f.is_sep then
-          -- Full-width separator with centered label (Marvin style)
-          local ln          = #lines
-          local t           = ' ' .. f.display .. ' '
-          local tw          = vim.fn.strdisplaywidth(t)
-          local rem         = math.max(0, LIST_W - tw)
-          local ll          = math.floor(rem / 2)
-          local lr          = rem - ll
-          lines[#lines + 1] = string.rep('-', ll) .. t .. string.rep('-', lr)
-          ahl(ln, 'JasonSepLine', 0, -1)
-          ahl(ln, 'JasonSepLabel', ll, ll + tw)
-        else
-          rank = rank + 1
-          if rank >= vt and rank <= view_end then
-            local is_sel = (rank == sel_pos)
-            -- Marvin uses >> for selected, two spaces for unselected
-            local caret  = is_sel and '>> ' or '   '
-            local label  = f.display
-            local lw     = vim.fn.strdisplaywidth(label)
-            local body
-
-            if f.desc then
-              local gap = math.max(2, desc_col - lw)
-              -- Marvin style: label + spaces + bullet + desc
-              body = label .. string.rep(' ', gap) .. '* ' .. f.desc
-            else
-              body = label
-            end
-            if f.badge then body = body .. '  ' .. f.badge end
-
-            local row = caret .. body
-            local rw  = vim.fn.strdisplaywidth(row)
-            if rw < LIST_W - 2 then
-              row = row .. string.rep(' ', LIST_W - 2 - rw)
-            end
-
-            local ln = #lines
-            lines[#lines + 1] = row
-
-            if is_sel then
-              ahl(ln, 'JasonSelected', 0, -1)
-            else
-              ahl(ln, 'JasonItem', 3, 3 + lw)
-              if f.desc then
-                local dc = 3 + lw + math.max(2, desc_col - lw) + 2
-                ahl(ln, 'JasonDesc', dc, -1)
-              end
-              if f.badge then
-                ahl(ln, 'JasonBadge', -vim.fn.strdisplaywidth(f.badge) - 2, -1)
-              end
-            end
-
-            if rank == vt and show_up then
-              ahl(ln, 'JasonFooter', LIST_W - 4, LIST_W - 3)
-            end
-            if rank == view_end and show_down then
-              ahl(ln, 'JasonFooter', LIST_W - 4, LIST_W - 3)
-            end
-          end
-        end
-      end
-    end
-
-    -- Footer (Marvin style)
-    lines[#lines + 1] = ''
-    lines[#lines + 1] = string.rep('-', LIST_W)
-    ahl(#lines - 1, 'JasonSepLine', 0, -1)
-    local info = string.format('  %d/%d items', sel_pos, total)
-    if search ~= '' then info = info .. '  "' .. search .. '"' end
-    lines[#lines + 1] = info
-    ahl(#lines - 1, 'JasonFooter', 0, -1)
-    lines[#lines + 1] = '  j/k Navigate | <CR> Select | <Esc> Cancel'
-    ahl(#lines - 1, 'JasonFooterKey', 0, -1)
-    lines[#lines + 1] = ''
-
-    vim.api.nvim_set_option_value('modifiable', true, { buf = lbuf })
-    vim.api.nvim_buf_set_lines(lbuf, 0, -1, false, lines)
-    vim.api.nvim_set_option_value('modifiable', false, { buf = lbuf })
-    vim.api.nvim_buf_clear_namespace(lbuf, ns, 0, -1)
-    for _, h in ipairs(hls) do
-      pcall(vim.api.nvim_buf_add_highlight, lbuf, ns, h.hl, h.line, h.cs, h.ce)
-    end
-
-    -- Park the real cursor at line 1 so Neovim is happy; the caret is visual-only
-    pcall(vim.api.nvim_win_set_cursor, lwin, { 1, 0 })
-  end
-
-  -- Navigation
-  local function move(d)
-    local total = sel_total()
-    if total == 0 then return end
-    if d == 'dn' then
-      sel_pos = sel_pos % total + 1
-    elseif d == 'up' then
-      sel_pos = sel_pos - 1; if sel_pos < 1 then sel_pos = total end
-    elseif d == 'pgd' then
-      sel_pos = math.min(sel_pos + 8, total)
-    elseif d == 'pgu' then
-      sel_pos = math.max(sel_pos - 8, 1)
-    elseif d == 'top' then
-      sel_pos = 1
-    elseif d == 'bot' then
-      sel_pos = total
-    end
-    redraw()
-  end
-
-  local function do_search(c)
-    if c == '<BS>' then
-      search = search:sub(1, -2)
-    elseif c == '<C-u>' then
-      search = ''
-    else
-      search = search .. c
-    end
-
-    vis = {}
-    for _, f in ipairs(all) do
-      if f.is_sep then
-        if search == '' then vis[#vis + 1] = vim.deepcopy(f) end
-      else
-        local ok, sc = fuzzy(f.display, search)
-        if ok then
-          local fc = vim.deepcopy(f); fc.score = sc; vis[#vis + 1] = fc
-        end
-      end
-    end
-    if search ~= '' then
-      table.sort(vis, function(a, b) return (a.score or 0) > (b.score or 0) end)
-    end
-    sel_pos  = 1
-    view_top = 1
-
-    local nh = win_h()
-    pcall(vim.api.nvim_win_set_height, lwin, nh)
-    if pwin then pcall(vim.api.nvim_win_set_height, pwin, nh) end
-    redraw()
-  end
-
-  local function close()
-    vim.o.guicursor = saved_guicursor
-    pcall(vim.api.nvim_win_close, lwin, true)
-    if pwin then pcall(vim.api.nvim_win_close, pwin, true) end
-  end
-
-  local function pick()
-    local rank = 0
-    for i, f in ipairs(vis) do
-      if not f.is_sep then
-        rank = rank + 1
-        if rank == sel_pos then
-          local chosen = f.item
-          close()
-          callback(chosen)
-          return
-        end
-      end
-    end
-  end
-
-  -- Keymaps
-  local mo = { noremap = true, silent = true, buffer = lbuf }
-  vim.keymap.set('n', 'j', function() move('dn') end, mo)
-  vim.keymap.set('n', 'k', function() move('up') end, mo)
-  vim.keymap.set('n', '<Down>', function() move('dn') end, mo)
-  vim.keymap.set('n', '<Up>', function() move('up') end, mo)
-  vim.keymap.set('n', '<C-d>', function() move('pgd') end, mo)
-  vim.keymap.set('n', '<C-u>', function() move('pgu') end, mo)
-  vim.keymap.set('n', 'G', function() move('bot') end, mo)
-  vim.keymap.set('n', 'gg', function() move('top') end, mo)
-  vim.keymap.set('n', '<CR>', pick, mo)
-  vim.keymap.set('n', '<Space>', pick, mo)
-  vim.keymap.set('n', 'l', pick, mo)
-  vim.keymap.set('n', '<Esc>', function()
-    close(); callback(nil)
-  end, mo)
-  vim.keymap.set('n', 'q', function()
-    close(); callback(nil)
-  end, mo)
-
-  if enable_search then
-    local nav = { j = true, k = true, q = true, l = true, G = true, g = true }
-    vim.keymap.set('n', '<BS>', function() do_search('<BS>') end, mo)
-    vim.keymap.set('n', '<C-u>', function() do_search('<C-u>') end, mo)
-    for i = 32, 126 do
-      local c = string.char(i)
-      if not nav[c] then
-        vim.keymap.set('n', c, function() do_search(c) end, mo)
-      end
-    end
-  end
-
-  for _, k in ipairs({ 'i', 'I', 'a', 'A', 'o', 'O', 'c', 'C', 's', 'S' }) do
-    vim.keymap.set('n', k, '<Nop>', mo)
-  end
-
-  -- Initial draw
-  redraw()
-
-  if pbuf and project then
-    vim.schedule(function()
-      local plines, phls = build_preview(project, PREV_W - 2)
-      local pns = vim.api.nvim_create_namespace('jason_prev')
-      vim.api.nvim_set_option_value('modifiable', true, { buf = pbuf })
-      vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, plines)
-      vim.api.nvim_set_option_value('modifiable', false, { buf = pbuf })
-      vim.api.nvim_buf_clear_namespace(pbuf, pns, 0, -1)
-      for _, h in ipairs(phls) do
-        pcall(vim.api.nvim_buf_add_highlight, pbuf, pns, h.hl, h.line, h.cs, h.ce)
-      end
+  if kind == 'quickstart' or kind == 'webapp' then
+    local a = archetypes[kind]
+    run_wizard(a.groupId, a.artifactId, a.version)
+  elseif kind == 'custom' then
+    -- Let user supply their own archetype coords
+    ui.input({ prompt = '󰒓 Archetype groupId', default = 'org.apache.maven.archetypes' }, function(agid)
+      if not agid or agid == '' then return end
+      ui.input({ prompt = '󰒓 Archetype artifactId', default = 'maven-archetype-quickstart' }, function(aaid)
+        if not aaid or aaid == '' then return end
+        ui.input({ prompt = '󰓾 Archetype version', default = 'RELEASE' }, function(aver)
+          if not aver or aver == '' then return end
+          run_wizard(agid, aaid, aver)
+        end)
+      end)
     end)
   end
 end
 
-function M.input(opts, cb)
-  opts = opts or {}
-  vim.ui.input({ prompt = (opts.prompt or 'Input') .. ': ', default = opts.default or '' }, cb)
+-- ── GraalVM sub-menu ──────────────────────────────────────────────────────────
+function M.show_graal_submenu(project)
+  local graal  = require('jason.graalvm')
+  local has_ni = graal.native_image_bin() ~= nil
+  local items  = {
+    {
+      id = 'graal_build_native',
+      icon = '󰱒',
+      label = 'Build Native',
+      desc = 'Compile to native binary',
+      badge = has_ni and '●' or '○ not installed'
+    },
+    { id = 'graal_run_native', icon = '▶', label = 'Run Native', desc = 'Execute native binary' },
+    { id = 'graal_build_run', icon = '󰔷', label = 'Build & Run Native', desc = 'Native build then run' },
+    { id = 'graal_agent_run', icon = '󰈙', label = 'Agent Run', desc = 'Collect reflection config' },
+    { id = 'graal_info', icon = '󰅾', label = 'GraalVM Info', desc = 'Status & config' },
+  }
+  if not has_ni then
+    items[#items + 1] = { id = 'graal_install_ni', icon = '󰚰', label = 'Install native-image', desc =
+    'gu install native-image' }
+  end
+  require('jason.ui').select(items, {
+    prompt      = 'GraalVM',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'graal_build_native' then
+      graal.build_native(project)
+    elseif choice.id == 'graal_run_native' then
+      graal.run_native(project)
+    elseif choice.id == 'graal_build_run' then
+      graal.build_and_run_native(project)
+    elseif choice.id == 'graal_agent_run' then
+      graal.run_with_agent(project)
+    elseif choice.id == 'graal_info' then
+      graal.show_info()
+    elseif choice.id == 'graal_install_ni' then
+      graal.install_native_image(project)
+    end
+  end)
 end
 
-function M.notify(msg, level)
-  vim.notify(msg, level or vim.log.levels.INFO, { title = 'Jason' })
+-- ── Rust sub-menu ─────────────────────────────────────────────────────────────
+function M.show_rust_submenu(project)
+  local ex   = require('jason.executor')
+  local cmds = {
+    doc = 'cargo doc --open',
+    bench = 'cargo bench',
+    expand = 'cargo expand',
+    update = 'cargo update',
+    outdated = 'cargo outdated',
+    audit = 'cargo audit',
+    tree = 'cargo tree',
+    bloat = 'cargo bloat',
+    flamegraph = 'cargo flamegraph',
+  }
+  require('jason.ui').select({
+    { id = 'doc', icon = '󰈙', label = 'Docs', desc = 'cargo doc --open' },
+    { id = 'bench', icon = '󰦉', label = 'Bench', desc = 'cargo bench' },
+    { id = 'expand', icon = '󰈙', label = 'Expand', desc = 'cargo expand — macro output' },
+    { id = 'update', icon = '󰚰', label = 'Update', desc = 'cargo update' },
+    { id = 'outdated', icon = '󰦉', label = 'Outdated', desc = 'cargo outdated' },
+    { id = 'audit', icon = '󰒃', label = 'Audit', desc = 'cargo audit — CVE check' },
+    { id = 'tree', icon = '󰙅', label = 'Dep Tree', desc = 'cargo tree' },
+    { id = 'bloat', icon = '󰍉', label = 'Bloat', desc = 'Binary size analysis' },
+    { id = 'flamegraph', icon = '󰦉', label = 'Flamegraph', desc = 'cargo flamegraph' },
+  }, {
+    prompt      = 'Rust Tools',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if choice and cmds[choice.id] then ex.custom(cmds[choice.id], choice.label) end
+  end)
 end
+
+-- ── Go sub-menu ───────────────────────────────────────────────────────────────
+function M.show_go_submenu(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+    { id = 'build_race', icon = '󰔷', label = 'Race Detector', desc = 'go build -race' },
+    { id = 'mod_tidy', icon = '󰚰', label = 'Mod Tidy', desc = 'go mod tidy' },
+    { id = 'mod_download', icon = '󰚰', label = 'Mod Download', desc = 'go mod download' },
+    { id = 'mod_verify', icon = '󰄬', label = 'Mod Verify', desc = 'go mod verify' },
+    { id = 'mod_graph', icon = '󰙅', label = 'Dep Graph', desc = 'go mod graph' },
+    { id = 'mod_why', icon = '󰍉', label = 'Why…', desc = 'go mod why — explain dep' },
+    { id = 'generate', icon = '󰑕', label = 'Generate', desc = 'go generate ./...' },
+    { id = 'godoc', icon = '󰈙', label = 'Godoc', desc = 'godoc -http :6060' },
+  }, {
+    prompt      = 'Go Tools',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'build_race' then
+      ex.custom('go build -race ./...', 'Race Build')
+    elseif choice.id == 'mod_tidy' then
+      ex.custom('go mod tidy', 'Tidy')
+    elseif choice.id == 'mod_download' then
+      ex.custom('go mod download', 'Download')
+    elseif choice.id == 'mod_verify' then
+      ex.custom('go mod verify', 'Verify')
+    elseif choice.id == 'mod_graph' then
+      ex.custom('go mod graph', 'Dep Graph')
+    elseif choice.id == 'mod_why' then
+      require('jason.ui').input({ prompt = 'Module name' }, function(mod)
+        if mod and mod ~= '' then ex.custom('go mod why ' .. mod, 'Why ' .. mod) end
+      end)
+    elseif choice.id == 'generate' then
+      ex.custom('go generate ./...', 'Generate')
+    elseif choice.id == 'godoc' then
+      ex.custom('godoc -http :6060', 'Godoc')
+    end
+  end)
+end
+
+-- ── C/C++ Compiler sub-menu ───────────────────────────────────────────────────
+function M.show_cpp_compiler_submenu(project)
+  local ex  = require('jason.executor')
+  local cfg = require('jason').config
+  require('jason.ui').select({
+    { id = 'cmake_debug', icon = '󰒓', label = 'CMake Debug', desc = '-DCMAKE_BUILD_TYPE=Debug' },
+    { id = 'cmake_release', icon = '󰓅', label = 'CMake Release', desc = '-DCMAKE_BUILD_TYPE=Release' },
+    { id = 'cmake_reldbg', icon = '󰒓', label = 'RelWithDebInfo', desc = 'Optimised + debug symbols' },
+    { id = 'cmake_minsz', icon = '󰒓', label = 'MinSizeRel', desc = 'Optimise for binary size' },
+    { id = 'asan', icon = '󰍉', label = 'ASAN Build', desc = 'AddressSanitizer' },
+    { id = 'tsan', icon = '󰍉', label = 'TSAN Build', desc = 'ThreadSanitizer' },
+    { id = 'ubsan', icon = '󰍉', label = 'UBSAN Build', desc = 'UndefinedBehaviorSanitizer' },
+    { id = 'lto', icon = '󰦉', label = 'LTO Build', desc = 'Link-time optimisation' },
+    { id = 'compile_commands', icon = '󰈙', label = 'Compile DB', desc = 'Generate compile_commands.json' },
+    { id = 'cpp_standard', icon = '󰒓', label = 'C++ Standard…', desc = 'Current: ' .. (cfg.cpp.standard or 'c++17') },
+    { id = 'cpp_compiler_pick', icon = '󰒓', label = 'Compiler…', desc = 'Current: ' .. (cfg.cpp.compiler or 'g++') },
+  }, {
+    prompt      = 'C/C++ Compiler',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    local function run(c, t) ex.custom(c, t) end
+    if choice.id == 'cmake_debug' then
+      run('cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build', 'CMake Debug')
+    elseif choice.id == 'cmake_release' then
+      run('cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build', 'CMake Release')
+    elseif choice.id == 'cmake_reldbg' then
+      run('cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build', 'RelWithDebInfo')
+    elseif choice.id == 'cmake_minsz' then
+      run('cmake -B build -DCMAKE_BUILD_TYPE=MinSizeRel && cmake --build build', 'MinSizeRel')
+    elseif choice.id == 'asan' then
+      run(
+      'cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_BUILD_TYPE=Debug && cmake --build build',
+        'ASAN')
+    elseif choice.id == 'tsan' then
+      run('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=thread" -DCMAKE_BUILD_TYPE=Debug && cmake --build build', 'TSAN')
+    elseif choice.id == 'ubsan' then
+      run('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=undefined" -DCMAKE_BUILD_TYPE=Debug && cmake --build build',
+        'UBSAN')
+    elseif choice.id == 'lto' then
+      run('cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON && cmake --build build',
+        'LTO Release')
+    elseif choice.id == 'compile_commands' then
+      run('cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cp build/compile_commands.json .', 'Compile DB')
+    elseif choice.id == 'cpp_standard' then
+      M.pick_cpp_standard(project)
+    elseif choice.id == 'cpp_compiler_pick' then
+      M.pick_cpp_compiler(project)
+    end
+  end)
+end
+
+function M.pick_cpp_standard(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+    { id = 'c++23', label = 'C++23', desc = 'Latest standard' },
+    { id = 'c++20', label = 'C++20', desc = 'Concepts, ranges, coroutines' },
+    { id = 'c++17', label = 'C++17', desc = 'Widely supported (default)' },
+    { id = 'c++14', label = 'C++14', desc = 'Broad compatibility' },
+    { id = 'c++11', label = 'C++11', desc = 'Modern baseline' },
+  }, {
+    prompt      = 'C++ Standard',
+    on_back     = function() M.show_cpp_compiler_submenu(project) end,
+    format_item = function(it) return it.label end,
+  }, function(c)
+    if c then
+      cfg.cpp.standard = c.id; vim.notify('C++ standard → ' .. c.id)
+    end
+  end)
+end
+
+function M.pick_cpp_compiler(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+    { id = 'g++',     label = 'g++',     desc = 'GNU C++ compiler' },
+    { id = 'clang++', label = 'clang++', desc = 'LLVM Clang compiler' },
+    { id = 'icpx',    label = 'icpx',    desc = 'Intel DPC++ compiler' },
+  }, {
+    prompt      = 'C++ Compiler',
+    on_back     = function() M.show_cpp_compiler_submenu(project) end,
+    format_item = function(it) return it.label end,
+  }, function(c)
+    if c then
+      cfg.cpp.compiler = c.id; vim.notify('Compiler → ' .. c.id)
+    end
+  end)
+end
+
+-- ── C++ Tools sub-menu ────────────────────────────────────────────────────────
+function M.show_cpp_tools(project)
+  local ex = require('jason.executor')
+  require('jason.ui').select({
+    { id = 'valgrind', icon = '󰍉', label = 'Valgrind', desc = 'Memory error detection' },
+    { id = 'clang_tidy', icon = '󰁨', label = 'Clang-Tidy', desc = 'Static analysis' },
+    { id = 'cppcheck', icon = '󰁨', label = 'Cppcheck', desc = 'cppcheck --enable=all src/' },
+    { id = 'cmake_pack', icon = '󰏗', label = 'CPack', desc = 'cpack --config build/CPackConfig.cmake' },
+    { id = 'cmake_inst', icon = '󰇚', label = 'CMake Install', desc = 'cmake --install build' },
+    { id = 'asm', icon = '󰈙', label = 'View Assembly', desc = 'objdump -d on built binary' },
+    { id = 'size', icon = '󰦉', label = 'Binary Size', desc = 'size on built binary' },
+  }, {
+    prompt      = 'C++ Tools',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'valgrind' then
+      ex.custom('valgrind --leak-check=full ' .. (ex.find_cmake_executable(project) or './main'), 'Valgrind')
+    elseif choice.id == 'clang_tidy' then
+      ex.custom('clang-tidy $(find src -name "*.cpp")', 'Clang-Tidy')
+    elseif choice.id == 'cppcheck' then
+      ex.custom('cppcheck --enable=all src/', 'Cppcheck')
+    elseif choice.id == 'cmake_pack' then
+      ex.custom('cpack --config build/CPackConfig.cmake', 'CPack')
+    elseif choice.id == 'cmake_inst' then
+      ex.custom('cmake --install build', 'CMake Install')
+    elseif choice.id == 'asm' then
+      ex.custom('objdump -d ' .. (ex.find_cmake_executable(project) or './main') .. ' | less', 'Assembly')
+    elseif choice.id == 'size' then
+      ex.custom('size ' .. (ex.find_cmake_executable(project) or './main'), 'Binary Size')
+    end
+  end)
+end
+
+-- ── Quality sub-menu ──────────────────────────────────────────────────────────
+function M.show_quality_menu(project)
+  local lang  = project.language
+  local ptype = project.type
+  local ex    = require('jason.executor')
+  local items = {}
+  local function add(id, icon, label, desc)
+    items[#items + 1] = { id = id, icon = icon, label = label, desc = desc }
+  end
+
+  if lang == 'rust' then
+    add('audit', '󰒃', 'Audit', 'cargo audit — check for CVEs')
+    add('outdated', '󰦉', 'Outdated', 'cargo outdated — show upgrades')
+    add('coverage', '󰦉', 'Coverage', 'cargo tarpaulin')
+  elseif lang == 'go' then
+    add('coverage', '󰦉', 'Coverage', 'go test -cover ./...')
+    add('vet', '󰁨', 'Vet', 'go vet ./...')
+    add('staticcheck', '󰁨', 'Staticcheck', 'staticcheck ./...')
+  elseif lang == 'java' then
+    add('mvn_verify', '󰄬', 'Verify', 'mvn verify')
+    if ptype == 'maven' then
+      add('spotless', '󰉣', 'Spotless', 'mvn spotless:apply')
+      add('checkstyle', '󰁨', 'Checkstyle', 'mvn checkstyle:check')
+      add('pmd', '󰁨', 'PMD', 'mvn pmd:check')
+    end
+  elseif lang == 'cpp' then
+    add('clang_tidy', '󰁨', 'Clang-Tidy', 'clang-tidy checks')
+    add('cppcheck', '󰁨', 'Cppcheck', 'cppcheck --enable=all src/')
+    add('valgrind', '󰍉', 'Valgrind', 'Memory error detection')
+    add('sanitize_address', '󰍉', 'ASAN', 'AddressSanitizer build')
+    add('sanitize_thread', '󰍉', 'TSAN', 'ThreadSanitizer build')
+  end
+
+  require('jason.ui').select(items, {
+    prompt      = 'Quality Tools',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    local id = choice.id
+    if id == 'audit' then
+      ex.custom('cargo audit', 'Audit')
+    elseif id == 'outdated' then
+      ex.custom('cargo outdated', 'Outdated')
+    elseif id == 'coverage' and lang == 'rust' then
+      ex.custom('cargo tarpaulin', 'Coverage')
+    elseif id == 'coverage' and lang == 'go' then
+      ex.custom('go test -cover ./...', 'Coverage')
+    elseif id == 'vet' then
+      ex.custom('go vet ./...', 'Vet')
+    elseif id == 'staticcheck' then
+      ex.custom('staticcheck ./...', 'Staticcheck')
+    elseif id == 'mvn_verify' then
+      ex.custom('mvn verify', 'Verify')
+    elseif id == 'spotless' then
+      ex.custom('mvn spotless:apply', 'Spotless')
+    elseif id == 'checkstyle' then
+      ex.custom('mvn checkstyle:check', 'Checkstyle')
+    elseif id == 'pmd' then
+      ex.custom('mvn pmd:check', 'PMD')
+    elseif id == 'clang_tidy' then
+      ex.custom('clang-tidy $(find src -name "*.cpp")', 'Tidy')
+    elseif id == 'cppcheck' then
+      ex.custom('cppcheck --enable=all src/', 'Cppcheck')
+    elseif id == 'valgrind' then
+      ex.custom('valgrind --leak-check=full ' .. (ex.find_cmake_executable(project) or './main'), 'Valgrind')
+    elseif id == 'sanitize_address' then
+      ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=address" && cmake --build build', 'ASAN')
+    elseif id == 'sanitize_thread' then
+      ex.custom('cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=thread" && cmake --build build', 'TSAN')
+    end
+  end)
+end
+
+-- ── Maven profile picker ──────────────────────────────────────────────────────
+function M.run_with_maven_profile(project)
+  local ok, mp   = pcall(require, 'marvin.project')
+  local profiles = ok and mp.get_project() and mp.get_project().info and mp.get_project().info.profiles or {}
+  if #profiles == 0 then
+    vim.notify('No Maven profiles found in pom.xml', vim.log.levels.INFO); return
+  end
+  local items = {}
+  for _, pid in ipairs(profiles) do
+    items[#items + 1] = { id = pid, label = pid, desc = 'Maven profile' }
+  end
+  require('jason.ui').select(items, {
+    prompt      = 'Maven Profile',
+    on_back     = function() M.show_mvn_submenu(project) end,
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice then
+      require('jason.executor').custom('mvn install -P' .. choice.id, 'Install (' .. choice.id .. ')')
+    end
+  end)
+end
+
+-- ── Monorepo switcher ─────────────────────────────────────────────────────────
+function M.show_project_picker()
+  local det  = require('jason.detector')
+  local subs = det.detect_sub_projects(vim.fn.getcwd())
+  if not subs or #subs == 0 then
+    vim.notify('No sub-projects found', vim.log.levels.INFO); return
+  end
+  local items = {}
+  for _, p in ipairs(subs) do
+    items[#items + 1] = { id = p.root, label = p.name, desc = p.type .. ' · ' .. p.language, _proj = p }
+  end
+  require('jason.ui').select(items, {
+    prompt      = 'Switch Project',
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice then
+      det.set_project(choice._proj)
+      vim.notify('Switched to: ' .. choice.label, vim.log.levels.INFO)
+      vim.defer_fn(function() M.show(choice._proj) end, 50)
+    end
+  end)
+end
+
+-- ── Settings sub-menu ─────────────────────────────────────────────────────────
+function M.show_settings_submenu(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+    { id = 'terminal_settings', icon = '󰆍', label = 'Terminal', desc = 'Position: ' .. cfg.terminal.position },
+    { id = 'env_settings', icon = '󰙩', label = 'Run Args', desc = 'View stored per-project args' },
+    { id = 'keybindings', icon = '󰌌', label = 'Keybindings', desc = 'View all shortcuts' },
+  }, {
+    prompt      = 'Settings',
+    on_back     = function() M.show(project) end,
+    format_item = function(it) return it.icon .. ' ' .. it.label end,
+  }, function(choice)
+    if not choice then return end
+    if choice.id == 'terminal_settings' then
+      M.show_terminal_settings(project)
+    elseif choice.id == 'env_settings' then
+      M.show_env_settings(project)
+    elseif choice.id == 'keybindings' then
+      M.show_keybindings()
+    end
+  end)
+end
+
+function M.show_terminal_settings(project)
+  local cfg = require('jason').config
+  require('jason.ui').select({
+    { id = 'float',      label = 'Float',      desc = 'Centered floating window' },
+    { id = 'split',      label = 'Split',      desc = 'Horizontal split below' },
+    { id = 'vsplit',     label = 'Vsplit',     desc = 'Vertical split beside' },
+    { id = 'background', label = 'Background', desc = 'Silent background job' },
+  }, {
+    prompt      = 'Terminal Position',
+    on_back     = function() M.show_settings_submenu(project) end,
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice then
+      cfg.terminal.position = choice.id; vim.notify('Terminal → ' .. choice.id)
+    end
+  end)
+end
+
+function M.show_env_settings(project)
+  local ex   = require('jason.executor')
+  local root = project.root
+  vim.api.nvim_echo({ { table.concat({
+    '', '  Stored run arguments for: ' .. (project.name or root),
+    '  ' .. string.rep('─', 40), '',
+    string.format('  %-16s  %q', 'build args:', ex.get_args(root, 'build')),
+    string.format('  %-16s  %q', 'run args:', ex.get_args(root, 'run')),
+    string.format('  %-16s  %q', 'test filter:', ex.get_args(root, 'test')),
+    '', '  Use "Run Options…" to update these.', '',
+  }, '\n'), 'Normal' } }, true, {})
+end
+
+function M.show_keybindings()
+  local cfg = require('jason').config.keymaps
+  vim.api.nvim_echo({ { table.concat({
+    '', '  Jason Keybindings', '  ' .. string.rep('─', 32), '',
+    string.format('  %-18s %s', cfg.dashboard or '<leader>jb', 'Open dashboard'),
+    string.format('  %-18s %s', cfg.build or '<leader>jc', 'Build'),
+    string.format('  %-18s %s', cfg.run or '<leader>jr', 'Run'),
+    string.format('  %-18s %s', cfg.test or '<leader>jt', 'Test'),
+    string.format('  %-18s %s', cfg.clean or '<leader>jx', 'Clean'),
+    string.format('  %-18s %s', cfg.console or '<leader>jo', 'Task Console'),
+    '', '  j/k navigate  ·  ⏎ select  ·  ⎋ quit  ·  type to search  ·  <BS> back', '',
+  }, '\n'), 'Normal' } }, true, {})
+end
+
+function M.show_history() require('jason.console').open() end
 
 return M

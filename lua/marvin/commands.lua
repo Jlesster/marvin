@@ -1,4 +1,5 @@
 -- lua/marvin/commands.lua
+-- All user commands for Marvin (project manager) and Jason (task runner).
 
 local M = {}
 
@@ -7,52 +8,196 @@ function M.register()
     vim.api.nvim_create_user_command(name, fn, opts or {})
   end
 
-  -- Dashboard
-  cmd('Marvin', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin dashboard' })
-  cmd('MarvinDashboard', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin dashboard' })
+  -- ════════════════════════════════════════════════════════════════════════════
+  -- MARVIN — Project management
+  -- ════════════════════════════════════════════════════════════════════════════
 
-  -- Maven lifecycle
-  cmd('MavenCompile', function() require('marvin.executor').run('compile') end, { desc = 'mvn compile' })
-  cmd('MavenTest', function() require('marvin.executor').run('test') end, { desc = 'mvn test' })
-  cmd('MavenPackage', function() require('marvin.executor').run('package') end, { desc = 'mvn package' })
-  cmd('MavenInstall', function() require('marvin.executor').run('install') end, { desc = 'mvn install' })
-  cmd('MavenVerify', function() require('marvin.executor').run('verify') end, { desc = 'mvn verify' })
-  cmd('MavenClean', function() require('marvin.executor').run('clean') end, { desc = 'mvn clean' })
-  cmd('MavenCleanInstall', function() require('marvin.executor').run('clean install') end, { desc = 'mvn clean install' })
+  -- Main dashboard
+  cmd('Marvin', function() require('marvin.dashboard').show() end,
+    { desc = 'Open Marvin project dashboard' })
+  cmd('MarvinDashboard', function() require('marvin.dashboard').show() end,
+    { desc = 'Open Marvin project dashboard' })
 
-  -- Arbitrary goal
-  cmd('MavenExec', function(o)
-    require('marvin.executor').run(o.args)
-  end, { nargs = '+', complete = M.complete_goals, desc = 'Run any Maven goal' })
+  -- Project info
+  cmd('MarvinInfo', function()
+    local p = require('marvin.detector').get()
+    if not p then
+      vim.notify('[Marvin] No project detected', vim.log.levels.WARN); return
+    end
+    local info = p.info or {}
+    local lines = {
+      'Project : ' .. (p.name or '?'),
+      'Type    : ' .. p.type,
+      'Lang    : ' .. p.lang,
+      'Root    : ' .. p.root,
+    }
+    for k, v in pairs(info) do
+      if type(v) == 'string' or type(v) == 'number' or type(v) == 'boolean' then
+        lines[#lines + 1] = string.format('%-8s: %s', k, tostring(v))
+      end
+    end
+    vim.notify(table.concat(lines, '\n'), vim.log.levels.INFO)
+  end, { desc = 'Show current project info' })
 
-  -- Inspect
-  cmd('MavenDepTree', function() require('marvin.executor').run('dependency:tree') end, { desc = 'mvn dependency:tree' })
-  cmd('MavenDepAnalyze', function() require('marvin.executor').run('dependency:analyze') end,
-    { desc = 'mvn dependency:analyze' })
-  cmd('MavenEffectivePom', function() require('marvin.executor').run('help:effective-pom') end,
-    { desc = 'mvn help:effective-pom' })
+  -- Project reload
+  cmd('MarvinReload', function()
+    require('marvin.detector').reload()
+    vim.notify('[Marvin] Project reloaded', vim.log.levels.INFO)
+  end, { desc = 'Re-parse project manifest' })
 
-  -- File creation
-  cmd('JavaNew', function() require('marvin.dashboard').show() end, { desc = 'Open Marvin (create Java file)' })
-  cmd('MavenNew', function() require('marvin.generator').create_project() end,
-    { desc = 'New Maven project from archetype' })
+  -- Switch project (monorepo)
+  cmd('MarvinSwitch', function()
+    require('marvin.dashboard').show_project_picker()
+  end, { desc = 'Switch active sub-project' })
+
+  -- ── Java / Maven ────────────────────────────────────────────────────────────
+  cmd('JavaNew', function()
+    require('marvin.creator.java').show_menu(function()
+      require('marvin.dashboard').show()
+    end)
+  end, { desc = 'New Java file (class/interface/record/enum…)' })
+
+  cmd('MavenNew', function()
+    local ok, gen = pcall(require, 'marvin.generator')
+    if ok then gen.create_project() end
+  end, { desc = 'New Maven project from archetype' })
+
+  -- Direct Maven goal
+  cmd('Maven', function(args)
+    local goal = args.args
+    if goal == '' then
+      vim.notify('[Marvin] Usage: :Maven <goal>', vim.log.levels.WARN); return
+    end
+    require('marvin.executor').run(goal)
+  end, { nargs = '+', desc = 'Run Maven goal' })
+
+  -- Common Maven shortcuts
+  for _, spec in ipairs({
+    { 'MavenCompile', 'compile', 'mvn compile' },
+    { 'MavenTest',    'test',    'mvn test' },
+    { 'MavenPackage', 'package', 'mvn package' },
+    { 'MavenInstall', 'install', 'mvn install' },
+    { 'MavenClean',   'clean',   'mvn clean' },
+    { 'MavenVerify',  'verify',  'mvn verify' },
+    { 'MavenDeploy',  'deploy',  'mvn deploy' },
+  }) do
+    local name, goal = spec[1], spec[2]
+    cmd(name, function() require('marvin.executor').run(goal) end,
+      { desc = spec[3] })
+  end
+
+  cmd('MavenStop', function()
+    local ok, runner = pcall(require, 'core.runner')
+    if ok then runner.stop_all() end
+  end, { desc = 'Stop running Maven process' })
+
+  -- ── Rust / Cargo ────────────────────────────────────────────────────────────
+  cmd('RustNew', function()
+    require('marvin.creator.rust').create_crate()
+  end, { desc = 'New Cargo crate (bin or lib)' })
+
+  -- ── Go ───────────────────────────────────────────────────────────────────────
+  cmd('GoNew', function()
+    local p = require('marvin.detector').get()
+    if not p or p.type ~= 'go_mod' then
+      vim.notify('[Marvin] Not in a Go project', vim.log.levels.WARN); return
+    end
+    require('marvin.dashboard').show()
+  end, { desc = 'Open Go creation menu' })
+
+  -- ── C / C++ ──────────────────────────────────────────────────────────────────
+  cmd('CppNew', function()
+    local p = require('marvin.detector').get()
+    if not p or (p.type ~= 'cmake' and p.type ~= 'makefile' and p.type ~= 'single_file') then
+      vim.notify('[Marvin] Not in a C/C++ project', vim.log.levels.WARN); return
+    end
+    require('marvin.creator.cpp').handle(
+      nil,  -- id = nil → show menu
+      function() require('marvin.dashboard').show() end
+    )
+  end, { desc = 'New C/C++ file (class/struct/enum/test…)' })
+
+  -- ── File creation ────────────────────────────────────────────────────────────
+  cmd('MarvinNewMakefile', function()
+    require('marvin.makefile_creator').create(vim.fn.getcwd())
+  end, { desc = 'Create a Makefile from template' })
+
+  -- ════════════════════════════════════════════════════════════════════════════
+  -- JASON — Task runner
+  -- ════════════════════════════════════════════════════════════════════════════
+
+  cmd('Jason', function()
+    require('marvin.jason_dashboard').show()
+  end, { desc = 'Open Jason task runner dashboard' })
+  cmd('JasonDashboard', function()
+    require('marvin.jason_dashboard').show()
+  end, { desc = 'Open Jason task runner dashboard' })
+
+  -- Core build actions
+  local bld = function() return require('marvin.build') end
+  cmd('JasonBuild', function() bld().build() end, { desc = 'Jason: Build project' })
+  cmd('JasonRun', function() bld().run() end, { desc = 'Jason: Run project' })
+  cmd('JasonTest', function() bld().test() end, { desc = 'Jason: Run tests' })
+  cmd('JasonClean', function() bld().clean() end, { desc = 'Jason: Clean' })
+  cmd('JasonPackage', function() bld().package() end, { desc = 'Jason: Package' })
+  cmd('JasonInstall', function() bld().install() end, { desc = 'Jason: Install' })
+  cmd('JasonFmt', function() bld().fmt() end, { desc = 'Jason: Format' })
+  cmd('JasonLint', function() bld().lint() end, { desc = 'Jason: Lint' })
+  cmd('JasonBuildRun', function() bld().build_and_run() end, { desc = 'Jason: Build then run' })
+
+  -- With prompts
+  cmd('JasonBuildArgs', function() bld().build(true) end, { desc = 'Jason: Build with args' })
+  cmd('JasonRunArgs', function() bld().run(true) end, { desc = 'Jason: Run with args' })
+  cmd('JasonTestFilter', function() bld().test(true) end, { desc = 'Jason: Test with filter' })
+
+  -- Exec arbitrary command in project root
+  cmd('JasonExec', function(args)
+    if args.args == '' then
+      vim.notify('[Jason] Usage: :JasonExec <command>', vim.log.levels.WARN); return
+    end
+    bld().custom(args.args, args.args)
+  end, { nargs = '+', desc = 'Jason: Run arbitrary command' })
+
+  -- Console
+  cmd('JasonConsole', function()
+    require('marvin.console').toggle()
+  end, { desc = 'Jason: Toggle task console' })
+  cmd('JasonHistory', function()
+    require('marvin.console').open()
+  end, { desc = 'Jason: Open task history' })
 
   -- Stop
-  cmd('MavenStop', function() require('marvin.executor').stop() end, { desc = 'Stop running Maven job' })
-end
+  cmd('JasonStop', function()
+    local ok, runner = pcall(require, 'core.runner')
+    if ok then runner.stop() end
+  end, { desc = 'Jason: Stop current task' })
+  cmd('JasonStopAll', function()
+    local ok, runner = pcall(require, 'core.runner')
+    if ok then runner.stop_all() end
+  end, { desc = 'Jason: Stop all tasks' })
 
-function M.complete_goals()
-  return {
-    'clean', 'compile', 'test', 'package', 'verify', 'install', 'deploy',
-    'clean install', 'clean package',
-    'dependency:tree', 'dependency:analyze', 'dependency:resolve',
-    'help:effective-pom', 'help:effective-settings', 'help:describe',
-    'versions:display-dependency-updates',
-    'spotless:apply', 'spotless:check',
-    'checkstyle:check', 'pmd:check',
-    'spring-boot:run',
-    'native:compile',
-  }
+  -- Sub-project switch
+  cmd('JasonSwitch', function()
+    require('marvin.dashboard').show_project_picker()
+  end, { desc = 'Jason: Switch sub-project' })
+
+  -- Makefile
+  cmd('JasonNewMakefile', function()
+    require('marvin.makefile_creator').create(vim.fn.getcwd())
+  end, { desc = 'Create a Makefile from template' })
+
+  -- GraalVM
+  cmd('GraalBuild', function()
+    local p = require('marvin.detector').get()
+    require('marvin.graalvm').build_native(p)
+  end, { desc = 'GraalVM: Build native image' })
+  cmd('GraalRun', function()
+    local p = require('marvin.detector').get()
+    require('marvin.graalvm').run_native(p)
+  end, { desc = 'GraalVM: Run native binary' })
+  cmd('GraalInfo', function()
+    require('marvin.graalvm').show_info()
+  end, { desc = 'GraalVM: Show status / install info' })
 end
 
 return M

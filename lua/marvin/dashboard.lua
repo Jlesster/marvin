@@ -1,87 +1,374 @@
 -- lua/marvin/dashboard.lua
--- Marvin: Java / Maven specialist.
--- Owns: POM manipulation, file generation, archetype generation,
---       dependency inspection, Maven lifecycle with profiles.
+-- Unified Marvin dashboard. Detects the current project and routes
+-- to the appropriate language module (lang/java, lang/rust, lang/go).
+-- Jason (build/run/test) is accessed separately via :Jason / <leader>j.
 
 local M = {}
 
--- ── Formatting helpers ────────────────────────────────────────────────────────
--- format_item embeds the icon into the display string.
--- We do NOT store icon as a table field, so marvin.ui cannot double-render it.
-local function plain_fmt(it) return it.label end
+-- ── UI helpers ────────────────────────────────────────────────────────────────
+local function plain(it) return it.label end
+local function sep(l) return { label = l, is_separator = true } end
 
-local function sep(label) return { label = label, is_separator = true } end
-
--- Top-level item: _icon is private (not used by marvin.ui), embedded by format_item.
-local function item(id, icon, label, desc, badge)
-  return { id = id, _icon = icon, label = label, desc = desc, badge = badge }
+local function item(id, icon, label, desc)
+  return { id = id, _icon = icon, label = label, desc = desc }
 end
 
--- Sub-menu item: icon is baked into the label string, no separate field.
-local function sub(id, icon, label, desc, badge)
-  return { id = id, label = icon .. ' ' .. label, desc = desc, badge = badge }
+local function ui() return require('marvin.ui') end
+local function det() return require('marvin.detector') end
+
+-- ── Language module registry ──────────────────────────────────────────────────
+local LANG = {
+  maven    = 'marvin.lang.java',
+  gradle   = 'marvin.lang.java',
+  cargo    = 'marvin.lang.rust',
+  go_mod   = 'marvin.lang.go',
+  cmake    = 'marvin.lang.cpp',
+  makefile = 'marvin.lang.cpp',
+}
+
+local function lang_mod(ptype)
+  local mod_name = LANG[ptype]
+  if not mod_name then return nil end
+  local ok, mod = pcall(require, mod_name)
+  return ok and mod or nil
 end
 
-local function get_summary()
-  local p = require('marvin.project').get_project()
-  if not p or not p.info then return nil end
+-- ── Dashboard header ──────────────────────────────────────────────────────────
+local LANG_ICONS = {
+  maven = '󰬷',
+  gradle = '󰏗',
+  cargo = '󱘗',
+  go_mod = '󰟓',
+  cmake = '󰙲',
+  makefile = '󰙱',
+  single_file = '󰈙',
+}
+
+local LANG_LABELS = {
+  maven = 'Maven',
+  gradle = 'Gradle',
+  cargo = 'Cargo',
+  go_mod = 'Go',
+  cmake = 'CMake',
+  makefile = 'Make',
+  single_file = 'Single File',
+}
+
+local function build_prompt(p)
+  if not p then return 'Marvin  (no project detected)' end
+  local icon   = LANG_ICONS[p.type] or '󰙅'
+  local label  = LANG_LABELS[p.type] or p.type
+  local lmod   = lang_mod(p.type)
+  local header = lmod and lmod.prompt_header(p) or p.name
+  return string.format('Marvin  %s %s  %s', icon, label, header)
+end
+
+-- ── Create section (always shown) ────────────────────────────────────────────
+local function create_items()
   return {
-    artifact  = p.info.artifact_id or 'unknown',
-    group     = p.info.group_id or 'unknown',
-    version   = p.info.version or 'unknown',
-    packaging = p.info.packaging or 'jar',
-    profiles  = p.info.profiles or {},
+    sep('Create Project'),
+    item('gen_maven', '󰬷', 'New Maven Project', 'Generate from Maven archetype'),
+    item('gen_cargo_bin', '󱘗', 'New Cargo Binary', 'cargo new <name>'),
+    item('gen_cargo_lib', '󱘗', 'New Cargo Library', 'cargo new --lib <name>'),
+    item('gen_go', '󰟓', 'New Go Module', 'go mod init <module>'),
+    sep('Create File'),
+    item('new_makefile', '󰈙', 'New Makefile', 'Makefile creation wizard'),
   }
 end
 
-local function has_assembly()
-  local pom = vim.fn.getcwd() .. '/pom.xml'
-  if vim.fn.filereadable(pom) == 0 then return false end
-  return table.concat(vim.fn.readfile(pom), '\n'):match('maven%-assembly%-plugin') ~= nil
+-- ── New-project / file handlers ───────────────────────────────────────────────
+
+-- Shared helper: show ~/Code subdirs as a picker, then call back with the chosen dir.
+local function prompt_location(callback)
+  local code_dir    = vim.fn.expand('~/Code')
+  local items       = {}
+
+  -- Always offer ~/Code itself as the first option
+  items[#items + 1] = {
+    id    = '__code_root__',
+    label = '~/Code',
+    desc  = 'Project root',
+    _path = code_dir,
+  }
+
+  -- List immediate subdirectories of ~/Code
+  if vim.fn.isdirectory(code_dir) == 1 then
+    local ok, entries = pcall(vim.fn.readdir, code_dir)
+    if ok then
+      -- Sort: directories only, alphabetical
+      local dirs = {}
+      for _, name in ipairs(entries) do
+        if name:sub(1, 1) ~= '.'
+            and vim.fn.isdirectory(code_dir .. '/' .. name) == 1 then
+          dirs[#dirs + 1] = name
+        end
+      end
+      table.sort(dirs)
+      for _, name in ipairs(dirs) do
+        items[#items + 1] = {
+          id    = name,
+          label = name,
+          desc  = '~/Code/' .. name,
+          _path = code_dir .. '/' .. name,
+        }
+      end
+    end
+  end
+
+  -- Always offer a manual entry option at the bottom
+  items[#items + 1] = {
+    id    = '__custom__',
+    label = 'Other…',
+    desc  = 'Enter a custom path',
+    _path = nil,
+  }
+
+  ui().select(items, {
+    prompt        = 'Project location',
+    enable_search = true,
+    format_item   = function(it) return it.label end,
+  }, function(choice)
+    if not choice then return end
+
+    if choice.id == '__custom__' then
+      ui().input({ prompt = 'Parent directory', default = code_dir }, function(dir)
+        if not dir or dir == '' then return end
+        dir = vim.fn.expand(dir)
+        if vim.fn.isdirectory(dir) == 0 then
+          vim.notify('[Marvin] Directory not found: ' .. dir, vim.log.levels.ERROR)
+          return
+        end
+        callback(dir)
+      end)
+    else
+      callback(choice._path)
+    end
+  end)
 end
 
--- ── Menu builder ──────────────────────────────────────────────────────────────
-function M.build_menu(in_maven, summary)
+-- Prompt to cd into the new project and open its manifest file.
+local function offer_open_project(proj_dir, entry)
+  vim.schedule(function()
+    ui().select({
+      { id = 'yes', label = '󰄬 Open project', desc = proj_dir },
+      { id = 'no', label = '󰅖 Stay here', desc = '' },
+    }, {
+      prompt      = 'Project ready!',
+      format_item = function(it) return it.label end,
+    }, function(choice)
+      if not choice or choice.id == 'no' then return end
+      vim.cmd('cd ' .. vim.fn.fnameescape(proj_dir))
+      local full = proj_dir .. '/' .. entry
+      if vim.fn.filereadable(full) == 1 then
+        vim.cmd('edit ' .. vim.fn.fnameescape(full))
+      end
+      -- Force Marvin to re-detect the new project
+      require('marvin.detector')._project = nil
+    end)
+  end)
+end
+
+local function handle_no_project(id)
+  if id == 'gen_maven' then
+    require('marvin.generator').create_project()
+  elseif id == 'gen_cargo_bin' then
+    ui().input({ prompt = 'Crate name' }, function(name)
+      if not name or name == '' then return end
+      prompt_location(function(dir)
+        local proj_dir = dir .. '/' .. name
+        local cfg = vim.tbl_extend('force', require('marvin').config.terminal, { close_on_success = true })
+        require('core.runner').execute({
+          cmd      = 'cargo new ' .. name,
+          cwd      = dir,
+          title    = 'New Cargo Binary',
+          term_cfg = cfg,
+          on_exit  = function(ok)
+            if ok then offer_open_project(proj_dir, 'Cargo.toml') end
+          end,
+        })
+      end)
+    end)
+  elseif id == 'gen_cargo_lib' then
+    ui().input({ prompt = 'Crate name' }, function(name)
+      if not name or name == '' then return end
+      prompt_location(function(dir)
+        local proj_dir = dir .. '/' .. name
+        local cfg = vim.tbl_extend('force', require('marvin').config.terminal, { close_on_success = true })
+        require('core.runner').execute({
+          cmd      = 'cargo new --lib ' .. name,
+          cwd      = dir,
+          title    = 'New Cargo Library',
+          term_cfg = cfg,
+          on_exit  = function(ok)
+            if ok then offer_open_project(proj_dir, 'Cargo.toml') end
+          end,
+        })
+      end)
+    end)
+  elseif id == 'gen_go' then
+    ui().input({ prompt = 'Module path (e.g. github.com/you/project)' }, function(mod)
+      if not mod or mod == '' then return end
+      local default_name = vim.fn.fnamemodify(mod, ':t')
+      ui().input({ prompt = 'Project directory name', default = default_name }, function(dirname)
+        if not dirname or dirname == '' then return end
+        prompt_location(function(parent)
+          local proj_dir = parent .. '/' .. dirname
+          vim.fn.mkdir(proj_dir, 'p')
+          local cfg = vim.tbl_extend('force', require('marvin').config.terminal, { close_on_success = true })
+          require('core.runner').execute({
+            cmd      = 'go mod init ' .. mod,
+            cwd      = proj_dir,
+            title    = 'go mod init',
+            term_cfg = cfg,
+            on_exit  = function(ok)
+              if ok then offer_open_project(proj_dir, 'go.mod') end
+            end,
+          })
+        end)
+      end)
+    end)
+  elseif id == 'new_makefile' then
+    require('marvin.makefile_creator').create(vim.fn.getcwd(), M.show)
+  end
+end
+
+-- ── C/C++ fallback (cmake/makefile — no lang module) ─────────────────────────
+local function cpp_items(p)
   local items = {}
   local function add(t) items[#items + 1] = t end
 
   add(sep('Create'))
-  add(item('new_project', '󰏗', 'New Maven Project', 'Generate from archetype'))
-  if in_maven then
-    add(item('new_file_menu', '󰬷', 'New Java File…', 'Class, Interface, Record, Enum…'))
-    add(item('new_test', '󰙨', 'New JUnit Test', 'JUnit 5 test class'))
+  add(item('new_makefile', '󰈙', 'New/Regenerate Makefile', 'Makefile creation wizard'))
 
-    add(sep('Build'))
-    add(item('compile', '󰑕', 'Compile', 'mvn compile'))
-    add(item('test', '󰙨', 'Test', 'mvn test'))
-    add(item('package', '󰏗', 'Package',
-      summary and ('Build ' .. summary.artifact .. '-' .. summary.version .. '.jar') or 'mvn package'))
-    add(item('build_menu', '󰒓', 'Build Options…', 'Skip tests, fat JAR, profiles, more'))
+  add(sep('Build'))
+  if p.type == 'cmake' then
+    add(item('cmake_cfg', '󰒓', 'Configure', 'cmake -B build -S .'))
+    add(item('cmake_build', '󰑕', 'Build', 'cmake --build build'))
+    add(item('cmake_test', '󰙨', 'Test', 'ctest --test-dir build'))
+    add(item('cmake_clean', '󰃢', 'Clean', 'cmake --build build --target clean'))
+    add(item('cmake_install', '󰇚', 'Install', 'cmake --install build'))
+  else
+    add(item('make_build', '󰑕', 'Build', 'make'))
+    add(item('make_test', '󰙨', 'Test', 'make test'))
+    add(item('make_clean', '󰃢', 'Clean', 'make clean'))
+    add(item('make_install', '󰇚', 'Install', 'make install'))
+  end
 
-    add(sep('Inspect'))
-    add(item('inspect_menu', '󰙅', 'Inspect…', 'Dep tree, effective POM, plugin help'))
+  add(sep('Console'))
+  add(item('console', '󰋚', 'Task Console', 'View build output history'))
+  return items
+end
 
-    add(sep('Dependencies'))
-    add(item('dep_menu', '󰘦', 'Manage Dependencies…', 'Add, update, purge'))
+local function handle_cpp(id, p)
+  local function run(cmd, title)
+    require('core.runner').execute({
+      cmd = cmd,
+      cwd = p.root,
+      title = title,
+      term_cfg = require('marvin').config.terminal,
+      plugin = 'marvin',
+    })
+  end
+  if id == 'new_makefile' then
+    require('marvin.makefile_creator').create(p.root, M.show)
+  elseif id == 'cmake_cfg' then
+    run('cmake -B build -S .', 'CMake Configure')
+  elseif id == 'cmake_build' then
+    run('cmake --build build', 'CMake Build')
+  elseif id == 'cmake_test' then
+    run('ctest --test-dir build', 'CTest')
+  elseif id == 'cmake_clean' then
+    run('cmake --build build --target clean', 'CMake Clean')
+  elseif id == 'cmake_install' then
+    run('cmake --install build', 'CMake Install')
+  elseif id == 'make_build' then
+    run('make', 'Make')
+  elseif id == 'make_test' then
+    run('make test', 'Make Test')
+  elseif id == 'make_clean' then
+    run('make clean', 'Make Clean')
+  elseif id == 'make_install' then
+    run('make install', 'Make Install')
+  elseif id == 'console' then
+    require('marvin.console').toggle()
+  end
+end
 
-    add(sep('Configure'))
-    add(item('config_menu', '󰒓', 'Project Settings…', 'Java version, encoding, plugins'))
+-- ── Common footer (always appended) ──────────────────────────────────────────
+local function footer_items(p)
+  local items = {}
+  local function add(t) items[#items + 1] = t end
+
+  if p then
+    local subs = require('marvin.detector').detect_sub_projects(vim.fn.getcwd())
+    if subs and #subs > 1 then
+      add(sep('Workspace'))
+      add(item('switch_project', '󰙅', 'Switch Project…',
+        #subs .. ' sub-projects detected'))
+    end
+  end
+
+  add(sep('Tools'))
+  add(item('console', '󰋚', 'Task Console', 'Jason build output history'))
+  add(item('reload', '󰚰', 'Reload Project', 'Re-parse the manifest'))
+  if p then
+    add(item('open_manifest', '󰈙', 'Open Manifest', 'Edit the project manifest file'))
   end
 
   return items
 end
 
--- ── Show ──────────────────────────────────────────────────────────────────────
+local function handle_footer(id, p)
+  if id == 'console' then
+    require('marvin.console').toggle()
+  elseif id == 'switch_project' then
+    M.show_project_picker()
+  elseif id == 'reload' then
+    require('marvin.detector').reload()
+    vim.notify('[Marvin] Project reloaded', vim.log.levels.INFO)
+    vim.schedule(M.show)
+  elseif id == 'open_manifest' and p then
+    local manifests = {
+      maven = 'pom.xml',
+      gradle = 'build.gradle',
+      cargo = 'Cargo.toml',
+      go_mod = 'go.mod',
+      cmake = 'CMakeLists.txt',
+    }
+    local f = manifests[p.type]
+    if f and vim.fn.filereadable(p.root .. '/' .. f) == 1 then
+      vim.cmd('edit ' .. vim.fn.fnameescape(p.root .. '/' .. f))
+    end
+  end
+end
+
+-- ── Main show function ────────────────────────────────────────────────────────
 function M.show()
-  local project  = require('marvin.project')
-  local in_maven = project.detect()
-  local summary  = in_maven and get_summary() or nil
+  local det   = require('marvin.detector')
+  local p     = det.get()
+  local lmod  = p and lang_mod(p.type)
 
-  local prompt   = summary
-      and ('Marvin  ' .. summary.group .. ':' .. summary.artifact .. '  v' .. summary.version)
-      or 'Marvin  (no Maven project)'
+  local items = {}
+  local function add_all(t) for _, v in ipairs(t) do items[#items + 1] = v end end
 
-  require('marvin.ui').select(M.build_menu(in_maven, summary), {
+  if not p then
+    -- No project: create options first
+    add_all(create_items())
+    add_all(footer_items(nil))
+  elseif lmod then
+    -- Full language module (Java, Rust, Go)
+    add_all(lmod.menu_items(p))
+    add_all(footer_items(p))
+    add_all(create_items())
+  else
+    -- single_file or unknown
+    add_all(create_items())
+    add_all(footer_items(p))
+  end
+
+  local prompt = build_prompt(p)
+
+  ui().select(items, {
     prompt        = prompt,
     enable_search = true,
     format_item   = function(it)
@@ -89,304 +376,55 @@ function M.show()
       return (it._icon and (it._icon .. ' ') or '') .. it.label
     end,
   }, function(choice)
-    if choice then M.handle_action(choice.id) end
-  end)
-end
+    if not choice then return end
+    local id   = choice.id
+    local back = M.show
 
--- ── Sub-menus ─────────────────────────────────────────────────────────────────
+    -- Create / new-project actions (available from any context)
+    if id == 'gen_maven' or id == 'gen_cargo_bin' or id == 'gen_cargo_lib'
+        or id == 'gen_go' or id == 'new_makefile' then
+      handle_no_project(id)
 
-function M.show_new_file_menu()
-  require('marvin.ui').select({
-      sub('new_class', '󰬷', 'Class', 'public class …'),
-      sub('new_main', '󰁔', 'Main Class', 'Class with main()'),
-      sub('new_interface', '󰜰', 'Interface', 'Contract definition'),
-      sub('new_enum', '󰒻', 'Enum', 'Type-safe constants'),
-      sub('new_record', '󰏗', 'Record', 'Immutable data carrier'),
-      sub('new_abstract', '󰦊', 'Abstract Class', 'Partial implementation'),
-      sub('new_exception', '󰅖', 'Exception', 'Custom error type'),
-      sub('new_builder', '󰒓', 'Builder', 'Builder pattern class'),
-    }, { prompt = 'New Java File', format_item = plain_fmt },
-    function(choice) if choice then M.handle_action(choice.id) end end)
-end
+      -- Footer / tools actions
+    elseif id == 'console' or id == 'switch_project'
+        or id == 'reload' or id == 'open_manifest' then
+      handle_footer(id, p)
 
-function M.show_build_menu(summary)
-  local items = {
-    sub('clean_install', '󰑓', 'Clean & Install', 'Full rebuild + install'),
-    sub('install', '󰇚', 'Install', 'mvn install → ~/.m2'),
-    sub('verify', '󰄬', 'Verify', 'Run integration tests'),
-    sub('skip_tests', '󰒭', 'Build (skip tests)', 'mvn package -DskipTests'),
-  }
-  if has_assembly() then
-    items[#items + 1] = sub('package_fat', '󱊞', 'Package Fat JAR', 'JAR with all dependencies')
-  end
-  if #(summary and summary.profiles or {}) > 0 then
-    items[#items + 1] = sub('with_profile', '󰒓', 'Run with Profile…',
-      #summary.profiles .. ' profiles available')
-  end
-
-  require('marvin.ui').select(items,
-    { prompt = 'Build Options', format_item = plain_fmt },
-    function(choice) if choice then M.handle_action(choice.id) end end)
-end
-
-function M.show_inspect_menu()
-  require('marvin.ui').select({
-      sub('dep_tree', '󰙅', 'Dependency Tree', 'mvn dependency:tree'),
-      sub('dep_analyze', '󰍉', 'Dependency Analysis', 'Find unused / undeclared deps'),
-      sub('dep_resolve', '󰚰', 'Resolve Deps', 'Download all dependencies'),
-      sub('effective_pom', '󰈙', 'Effective POM', 'Show resolved configuration'),
-      sub('effective_settings', '󰈙', 'Effective Settings', 'Show Maven settings'),
-      sub('help_describe', '󰅾', 'Describe Plugin', 'mvn help:describe'),
-    }, { prompt = 'Inspect', format_item = plain_fmt },
-    function(choice) if choice then M.handle_action(choice.id) end end)
-end
-
-function M.show_dep_menu()
-  local items = {
-    sub('add_jackson', '󰘦', 'Add Jackson JSON', 'com.fasterxml.jackson'),
-    sub('add_lwjgl', '󰊗', 'Add LWJGL', 'OpenGL / Vulkan / GLFW'),
-    sub('add_spring', '󰋊', 'Add Spring Boot', 'spring-boot-starter'),
-    sub('add_lombok', '󰬷', 'Add Lombok', 'Annotation processor'),
-    sub('add_junit5', '󰙨', 'Add JUnit 5', 'org.junit.jupiter'),
-    sub('add_mockito', '󰙨', 'Add Mockito', 'Mocking framework'),
-    sub('check_updates', '󰦉', 'Check for Updates', 'Display newer versions'),
-    sub('purge_cache', '󰃢', 'Purge Local Cache', 'mvn dependency:purge-local-repository'),
-  }
-  if not has_assembly() then
-    items[#items + 1] = sub('add_assembly', '󰒓', 'Enable Fat JAR', 'Add maven-assembly-plugin')
-  end
-  require('marvin.ui').select(items,
-    { prompt = 'Manage Dependencies', enable_search = true, format_item = plain_fmt },
-    function(choice) if choice then M.handle_action(choice.id) end end)
-end
-
-function M.show_config_menu()
-  require('marvin.ui').select({
-      sub('java_version_menu', '󰬷', 'Set Java Version…', 'Compiler source/target'),
-      sub('set_encoding', '󰉣', 'Set Encoding…', 'project.build.sourceEncoding'),
-      sub('add_spotless', '󰉣', 'Add Spotless', 'Code formatter plugin'),
-    }, { prompt = 'Project Settings', format_item = plain_fmt },
-    function(choice) if choice then M.handle_action(choice.id) end end)
-end
-
--- ── Action handler ────────────────────────────────────────────────────────────
-function M.handle_action(id)
-  local ex = require('marvin.executor')
-  local md = function() return require('marvin.dependencies') end
-
-  -- Submenu dispatchers
-  if id == 'new_file_menu' then
-    M.show_new_file_menu(); return
-  elseif id == 'build_menu' then
-    M.show_build_menu(get_summary()); return
-  elseif id == 'inspect_menu' then
-    M.show_inspect_menu(); return
-  elseif id == 'dep_menu' then
-    M.show_dep_menu(); return
-  elseif id == 'config_menu' then
-    M.show_config_menu(); return
-  elseif id == 'java_version_menu' then
-    M.prompt_java_version(); return
-
-    -- Create
-  elseif id == 'new_project' then
-    require('marvin.generator').create_project(); return
-  elseif id == 'new_class' then
-    M._new_file('Class', {})
-  elseif id == 'new_main' then
-    M._new_file('Class', { main = true })
-  elseif id == 'new_interface' then
-    M._new_file('Interface', {})
-  elseif id == 'new_enum' then
-    M._new_file_enum()
-  elseif id == 'new_record' then
-    M._new_file_record()
-  elseif id == 'new_abstract' then
-    M._new_file('Abstract Class', {})
-  elseif id == 'new_exception' then
-    M._new_file('Exception', {})
-  elseif id == 'new_test' then
-    M._new_file('Test', {})
-  elseif id == 'new_builder' then
-    M._new_file_builder()
-
-    -- Build
-  elseif id == 'compile' then
-    ex.run('compile')
-  elseif id == 'test' then
-    ex.run('test')
-  elseif id == 'package' then
-    ex.run('package')
-  elseif id == 'package_fat' then
-    ex.run('package assembly:single')
-  elseif id == 'install' then
-    ex.run('install')
-  elseif id == 'clean_install' then
-    ex.run('clean install')
-  elseif id == 'verify' then
-    ex.run('verify')
-  elseif id == 'skip_tests' then
-    ex.run('package -DskipTests')
-  elseif id == 'with_profile' then
-    M.show_profile_menu()
-
-    -- Inspect
-  elseif id == 'dep_tree' then
-    ex.run('dependency:tree')
-  elseif id == 'dep_analyze' then
-    ex.run('dependency:analyze')
-  elseif id == 'dep_resolve' then
-    ex.run('dependency:resolve')
-  elseif id == 'effective_pom' then
-    ex.run('help:effective-pom')
-  elseif id == 'effective_settings' then
-    ex.run('help:effective-settings')
-  elseif id == 'help_describe' then
-    M.prompt_describe()
-
-    -- Dependencies
-  elseif id == 'add_jackson' then
-    md().add_jackson()
-  elseif id == 'add_lwjgl' then
-    md().add_lwjgl()
-  elseif id == 'add_spring' then
-    md().add_spring()
-  elseif id == 'add_lombok' then
-    md().add_lombok()
-  elseif id == 'add_junit5' then
-    md().add_junit5()
-  elseif id == 'add_mockito' then
-    md().add_mockito()
-  elseif id == 'add_assembly' then
-    md().add_assembly_plugin()
-  elseif id == 'check_updates' then
-    ex.run('versions:display-dependency-updates')
-  elseif id == 'purge_cache' then
-    ex.run('dependency:purge-local-repository')
-
-    -- Configuration
-  elseif id == 'set_java_11' then
-    md().set_java_version('11')
-  elseif id == 'set_java_17' then
-    md().set_java_version('17')
-  elseif id == 'set_java_21' then
-    md().set_java_version('21')
-  elseif id == 'set_java_custom' then
-    M.prompt_java_version_input()
-  elseif id == 'set_encoding' then
-    M.prompt_encoding()
-  elseif id == 'add_spotless' then
-    md().add_spotless()
-  end
-end
-
--- ── File creation helpers ─────────────────────────────────────────────────────
-function M._new_file(type_name, opts)
-  local ok, jc = pcall(require, 'marvin.java_creator')
-  if not ok then
-    vim.notify('marvin.java_creator not found', vim.log.levels.ERROR); return
-  end
-  jc.create_file_interactive(type_name, opts, function() M.show() end)
-end
-
-function M._new_file_enum()
-  local jc = require('marvin.java_creator')
-  jc.prompt_enum_values(function(values)
-    if values then jc.create_file_interactive('Enum', { values = values }, function() M.show() end) end
-  end)
-end
-
-function M._new_file_record()
-  local jc = require('marvin.java_creator')
-  jc.prompt_fields(function(fields)
-    if fields then
-      jc.create_file_interactive('Record', { fields = fields }, function() M.show() end)
+      -- Language module actions (Java / Rust / Go)
+    elseif lmod then
+      lmod.handle(id, p, back)
     end
-  end, '󰏗 Record fields (Type name, …)')
-end
-
-function M._new_file_builder()
-  local jc = require('marvin.java_creator')
-  jc.prompt_fields(function(fields)
-    if fields then
-      if #fields > 0 then fields[1].required = true end
-      jc.create_file_interactive('Builder', { fields = fields }, function() M.show() end)
-    end
-  end, '󰒓 Builder fields (Type name, …)')
-end
-
--- ── Profile picker ────────────────────────────────────────────────────────────
-function M.show_profile_menu()
-  local proj     = require('marvin.project').get_project()
-  local profiles = proj and proj.info and proj.info.profiles or {}
-  if #profiles == 0 then
-    vim.notify('No profiles found in pom.xml', vim.log.levels.INFO); return
-  end
-  local prof_items = {}
-  for _, pid in ipairs(profiles) do
-    prof_items[#prof_items + 1] = { id = pid, label = pid, desc = 'Maven profile' }
-  end
-
-  require('marvin.ui').select({
-      { id = 'compile', label = 'compile' },
-      { id = 'test',    label = 'test' },
-      { id = 'package', label = 'package' },
-      { id = 'install', label = 'install' },
-      { id = 'verify',  label = 'verify' },
-    }, { prompt = 'Goal to run', format_item = plain_fmt },
-    function(goal)
-      if not goal then return end
-      require('marvin.ui').select(prof_items,
-        { prompt = 'Profile for: ' .. goal.id, format_item = plain_fmt },
-        function(prof)
-          if prof then require('marvin.executor').run(goal.id, { profile = prof.id }) end
-        end)
-    end)
-end
-
--- ── Prompts ───────────────────────────────────────────────────────────────────
-function M.prompt_java_version()
-  require('marvin.ui').select({
-      { version = '21', label = 'Java 21 (LTS)', desc = 'Virtual threads, pattern matching' },
-      { version = '17', label = 'Java 17 (LTS)', desc = 'Sealed classes, records' },
-      { version = '11', label = 'Java 11 (LTS)', desc = 'Widely adopted' },
-      { version = '8', label = 'Java 8  (LTS)', desc = 'Maximum compatibility' },
-      { version = '__custom__', label = 'Custom…', desc = 'Enter version number' },
-    }, { prompt = 'Java Version', format_item = plain_fmt },
-    function(choice)
-      if not choice then return end
-      if choice.version == '__custom__' then
-        M.prompt_java_version_input()
-      else
-        require('marvin.dependencies').set_java_version(choice.version)
-      end
-    end)
-end
-
-function M.prompt_java_version_input()
-  vim.ui.input({ prompt = 'Java version: ' }, function(v)
-    if v and v ~= '' then require('marvin.dependencies').set_java_version(v) end
   end)
 end
 
-function M.prompt_encoding()
-  require('marvin.ui').select({
-      { id = 'UTF-8',      label = 'UTF-8',      desc = 'Recommended' },
-      { id = 'ISO-8859-1', label = 'ISO-8859-1', desc = 'Latin-1' },
-      { id = 'US-ASCII',   label = 'US-ASCII',   desc = 'ASCII only' },
-    }, { prompt = 'Source Encoding', format_item = plain_fmt },
-    function(choice)
-      if choice then
-        local ok, md = pcall(require, 'marvin.dependencies')
-        if ok then md.set_encoding(choice.id) end
-      end
-    end)
-end
+-- ── Project switcher (monorepo) ───────────────────────────────────────────────
+function M.show_project_picker()
+  local det  = require('marvin.detector')
+  local subs = det.detect_sub_projects(vim.fn.getcwd())
+  if not subs or #subs == 0 then
+    vim.notify('[Marvin] No sub-projects found', vim.log.levels.INFO); return
+  end
 
-function M.prompt_describe()
-  vim.ui.input({ prompt = 'Plugin (e.g. maven-compiler-plugin): ' }, function(plugin)
-    if plugin and plugin ~= '' then
-      require('marvin.executor').run('help:describe -Dplugin=' .. plugin)
+  local items = {}
+  for _, sp in ipairs(subs) do
+    local icon        = LANG_ICONS[sp.type] or '󰙅'
+    local label       = LANG_LABELS[sp.type] or sp.type
+    items[#items + 1] = {
+      id    = sp.root,
+      label = icon .. ' ' .. sp.name,
+      desc  = label .. ' — ' .. sp.root,
+      _proj = sp,
+    }
+  end
+
+  ui().select(items, {
+    prompt      = 'Switch Project',
+    format_item = plain,
+  }, function(choice)
+    if choice then
+      det.set(choice._proj)
+      vim.notify('[Marvin] Active project → ' .. choice._proj.name, vim.log.levels.INFO)
+      vim.schedule(M.show)
     end
   end)
 end

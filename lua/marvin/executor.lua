@@ -1,14 +1,22 @@
 -- lua/marvin/executor.lua
--- Marvin only handles Maven execution. All job running goes through core.runner.
+-- Marvin side: Maven execution via  M.run(goal, options).
+-- Jason side:  Multi-language build actions live in  marvin.build  (separate
+--              module below).  This file re-exports a backwards-compat shim
+--              so any code that did  require('jason.executor')  can be pointed
+--              at  require('marvin.build')  instead.
 
 local M = {}
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- MARVIN — Maven executor
+-- ══════════════════════════════════════════════════════════════════════════════
 
 function M.run(goal, options)
   options = options or {}
 
   local project = require('marvin.project')
   if not project.validate_environment() then return end
-  local proj = project.get_project()
+  local proj = project.get()
   if not proj then
     vim.notify('No Maven project found', vim.log.levels.ERROR); return
   end

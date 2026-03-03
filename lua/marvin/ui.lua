@@ -43,12 +43,6 @@ local function setup_highlights()
   hl('MarvinInputHint', { fg = C.ov0 })
 end
 
-function M.init()
-  local cfg = require('marvin').config
-  M.backend = cfg.ui_backend == 'auto' and M.detect_backend() or cfg.ui_backend
-  setup_highlights()
-end
-
 function M.detect_backend()
   if pcall(require, 'snacks') then
     return 'snacks'
@@ -59,7 +53,15 @@ function M.detect_backend()
   end
 end
 
--- Fuzzy match
+-- cfg is passed in from marvin.init to avoid a circular require.
+function M.init(cfg)
+  cfg = cfg or {}
+  local backend = cfg.ui_backend or 'auto'
+  M.backend = backend == 'auto' and M.detect_backend() or backend
+  setup_highlights()
+end
+
+-- ── Fuzzy match ───────────────────────────────────────────────────────────────
 local function fuzzy(str, pat)
   if pat == '' then return true, 0 end
   str = str:lower(); pat = pat:lower()
@@ -79,35 +81,32 @@ local function fuzzy(str, pat)
   return false, 0
 end
 
--- Main select
+-- ── Main select ───────────────────────────────────────────────────────────────
 function M.select(items, opts, callback)
   opts                = opts or {}
   local prompt        = opts.prompt or 'Select'
   local enable_search = opts.enable_search ~= false
   local on_back       = opts.on_back or nil
-  local format_fn     = opts.format_item or function(item)
-    return type(item) == 'table' and (item.label or item.name or tostring(item)) or tostring(item)
+  local format_fn     = opts.format_item or function(it)
+    return type(it) == 'table' and (it.label or it.name or tostring(it)) or tostring(it)
   end
 
-  -- Pre-format — icon is stored separately so we can highlight it independently
   local all           = {}
-  for i, item in ipairs(items) do
+  for i, it in ipairs(items) do
     all[i] = {
       idx     = i,
-      item    = item,
-      display = format_fn(item),
-      icon    = type(item) == 'table' and item.icon or nil,
-      desc    = type(item) == 'table' and item.desc or nil,
-      badge   = type(item) == 'table' and item.badge or nil,
-      is_sep  = type(item) == 'table' and (item.is_separator == true) or false,
+      item    = it,
+      display = format_fn(it),
+      icon    = type(it) == 'table' and it.icon or nil,
+      desc    = type(it) == 'table' and it.desc or nil,
+      badge   = type(it) == 'table' and it.badge or nil,
+      is_sep  = type(it) == 'table' and (it.is_separator == true) or false,
     }
   end
 
   local vis    = vim.deepcopy(all)
   local search = ''
   local screen = vim.api.nvim_list_uis()[1]
-
-  -- Layout
   local LIST_W = math.min(80, math.max(60, math.floor(screen.width * 0.55)))
 
   local function sel_total()
@@ -117,10 +116,7 @@ function M.select(items, opts, callback)
   end
 
   local function content_lines()
-    local n = #vis
-    n = n + (enable_search and 3 or 1)
-    n = n + 4
-    return n
+    return #vis + (enable_search and 3 or 1) + 4
   end
 
   local function win_h()
@@ -131,18 +127,15 @@ function M.select(items, opts, callback)
   local ROW   = math.floor((screen.height - WIN_H) / 2)
   local COL   = math.floor((screen.width - LIST_W) / 2)
 
-  -- Buffer
   local lbuf  = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('buftype', 'nofile', { buf = lbuf })
   vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = lbuf })
   vim.api.nvim_set_option_value('swapfile', false, { buf = lbuf })
   vim.api.nvim_set_option_value('modifiable', false, { buf = lbuf })
 
-  -- Hide cursor
   local saved_gc = vim.o.guicursor
   vim.o.guicursor = 'a:MarvinHiddenCursor'
 
-  -- Window
   local lwin = vim.api.nvim_open_win(lbuf, true, {
     relative  = 'editor',
     width     = LIST_W,
@@ -163,22 +156,18 @@ function M.select(items, opts, callback)
     signcolumn = 'no', scrolloff = 0,
   }) do vim.api.nvim_set_option_value(k, v, { win = lwin }) end
 
-  -- State
   local ns      = vim.api.nvim_create_namespace('marvin_select')
   local sel_pos = 1
   local vt      = 1
 
   local function visible_rows()
-    local header = enable_search and 3 or 1
-    local footer = 4
-    return math.max(1, WIN_H - header - footer)
+    return math.max(1, WIN_H - (enable_search and 3 or 1) - 4)
   end
 
   local function desc_col()
     local mx = 0
     for _, f in ipairs(vis) do
       if not f.is_sep and f.desc then
-        -- account for caret (3) + icon (2 if present) + label
         local w = 3 + (f.icon and 2 or 0) + vim.fn.strdisplaywidth(f.display)
         mx = math.max(mx, w + 2)
       end
@@ -201,7 +190,6 @@ function M.select(items, opts, callback)
     if sel_pos > vt + VR - 1 then vt = sel_pos - VR + 1 end
     vt = math.max(1, vt)
 
-    -- Search bar
     if enable_search then
       if search == '' then
         lines[#lines + 1] = '  _'
@@ -240,19 +228,17 @@ function M.select(items, opts, callback)
         else
           rank = rank + 1
           if rank >= vt and rank <= view_end then
-            local is_sel     = (rank == sel_pos)
-            local caret      = is_sel and '>> ' or '   '
-            local icon_str   = f.icon and (f.icon .. ' ') or ''
-            local label      = f.display
-            local lw         = vim.fn.strdisplaywidth(label)
-            local iw         = vim.fn.strdisplaywidth(icon_str)
-            local body_start = #caret + iw -- byte offset where label starts
+            local is_sel   = (rank == sel_pos)
+            local caret    = is_sel and '>> ' or '   '
+            local icon_str = f.icon and (f.icon .. ' ') or ''
+            local label    = f.display
+            local lw       = vim.fn.strdisplaywidth(label)
+            local iw       = vim.fn.strdisplaywidth(icon_str)
 
             local body
             if f.desc then
-              local used = #caret + iw + lw
-              local gap  = math.max(1, DC - (#caret + iw + lw))
-              body       = icon_str .. label .. string.rep(' ', gap) .. '* ' .. f.desc
+              local gap = math.max(1, DC - (#caret + iw + lw))
+              body = icon_str .. label .. string.rep(' ', gap) .. '* ' .. f.desc
             else
               body = icon_str .. label
             end
@@ -270,36 +256,24 @@ function M.select(items, opts, callback)
             if is_sel then
               ahl(ln, 'MarvinSelected', 0, -1)
             else
-              -- icon highlight
-              if f.icon then
-                ahl(ln, 'MarvinItemIcon', #caret, #caret + iw)
-              end
-              -- label highlight
+              if f.icon then ahl(ln, 'MarvinItemIcon', #caret, #caret + iw) end
               ahl(ln, 'MarvinItem', #caret + iw, #caret + iw + lw)
-              if f.desc then
-                local dc = DC + 2 -- past the '* '
-                ahl(ln, 'MarvinDesc', dc, -1)
-              end
+              if f.desc then ahl(ln, 'MarvinDesc', DC + 2, -1) end
               if f.badge then
                 ahl(ln, 'MarvinBadge', -vim.fn.strdisplaywidth(f.badge) - 2, -1)
               end
             end
 
-            if rank == vt and show_up then
-              ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2)
-            end
-            if rank == view_end and show_down then
-              ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2)
-            end
+            if rank == vt and show_up then ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2) end
+            if rank == view_end and show_down then ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2) end
           end
         end
       end
     end
 
-    -- Footer
     lines[#lines + 1] = string.rep('-', LIST_W)
     ahl(#lines - 1, 'MarvinSepLine', 0, -1)
-    local info = string.format('  %d/%d items', sel_pos, total)
+    local info = string.format('  %d/%d items', sel_pos, sel_total())
     if search ~= '' then info = info .. '  "' .. search .. '"' end
     lines[#lines + 1] = info
     ahl(#lines - 1, 'MarvinFooter', 0, -1)
@@ -318,7 +292,6 @@ function M.select(items, opts, callback)
     pcall(vim.api.nvim_win_set_cursor, lwin, { 1, 0 })
   end
 
-  -- Navigation
   local function move(d)
     local total = sel_total()
     if total == 0 then return end
@@ -361,8 +334,7 @@ function M.select(items, opts, callback)
       table.sort(vis, function(a, b) return (a.score or 0) > (b.score or 0) end)
     end
     sel_pos = 1; vt = 1
-    local nh = win_h()
-    pcall(vim.api.nvim_win_set_height, lwin, nh)
+    pcall(vim.api.nvim_win_set_height, lwin, win_h())
     redraw()
   end
 
@@ -383,7 +355,6 @@ function M.select(items, opts, callback)
     end
   end
 
-  -- Keymaps
   local mo = { noremap = true, silent = true, buffer = lbuf }
   vim.keymap.set('n', 'j', function() move('dn') end, mo)
   vim.keymap.set('n', 'k', function() move('up') end, mo)
@@ -428,15 +399,15 @@ function M.select(items, opts, callback)
   end
 
   vim.api.nvim_create_autocmd('WinLeave', {
-    buffer = lbuf,
-    once = true,
+    buffer   = lbuf,
+    once     = true,
     callback = function() vim.o.guicursor = saved_gc end,
   })
 
   redraw()
 end
 
--- Input popup
+-- ── Input popup ───────────────────────────────────────────────────────────────
 function M.input(opts, cb)
   opts          = opts or {}
   local prompt  = opts.prompt or 'Input'
@@ -452,37 +423,55 @@ function M.input(opts, cb)
   vim.api.nvim_set_option_value('swapfile', false, { buf = ibuf })
 
   local iwin = vim.api.nvim_open_win(ibuf, true, {
-    relative = 'editor',
-    width = W,
-    height = 4,
-    row = ROW,
-    col = COL,
-    style = 'minimal',
-    border = 'single',
-    title = { { ' ' .. prompt .. ' ', 'MarvinTitle' } },
+    relative  = 'editor',
+    width     = W,
+    height    = 4,
+    row       = ROW,
+    col       = COL,
+    style     = 'minimal',
+    border    = 'single',
+    title     = { { ' ' .. prompt .. ' ', 'MarvinTitle' } },
     title_pos = 'left',
-    zindex = 60,
+    zindex    = 60,
   })
   vim.api.nvim_set_option_value('winhl',
     'Normal:MarvinWin,FloatBorder:MarvinBorder', { win = iwin })
 
   vim.api.nvim_buf_set_lines(ibuf, 0, -1, false, {
-    '', '  ' .. default, '',
+    '',
+    default,
+    '',
     '  <CR> confirm | <Esc> cancel',
   })
+
   local ns = vim.api.nvim_create_namespace('marvin_input')
   vim.api.nvim_buf_add_highlight(ibuf, ns, 'MarvinInputText', 1, 0, -1)
   vim.api.nvim_buf_add_highlight(ibuf, ns, 'MarvinInputHint', 3, 0, -1)
-  vim.api.nvim_win_set_cursor(iwin, { 2, #default + 2 })
-  vim.schedule(function() vim.cmd('startinsert!') end)
+
+  vim.api.nvim_win_set_cursor(iwin, { 2, #default })
+  vim.schedule(function()
+    if vim.api.nvim_win_is_valid(iwin) then
+      vim.cmd('startinsert!')
+    end
+  end)
+
+  local submitted = false
+
+  local function close_and_call(value)
+    if submitted then return end
+    submitted = true
+    vim.cmd('stopinsert')
+    pcall(vim.api.nvim_win_close, iwin, true)
+    vim.schedule(function() cb(value) end)
+  end
 
   local function submit()
     local text = vim.trim(vim.api.nvim_buf_get_lines(ibuf, 1, 2, false)[1] or '')
-    pcall(vim.api.nvim_win_close, iwin, true)
-    cb(text ~= '' and text or nil)
+    close_and_call(text ~= '' and text or nil)
   end
+
   local function cancel()
-    pcall(vim.api.nvim_win_close, iwin, true); cb(nil)
+    close_and_call(nil)
   end
 
   local mo = { noremap = true, silent = true, buffer = ibuf }
@@ -496,13 +485,18 @@ function M.input(opts, cb)
   vim.keymap.set('i', '<Down>', '<Nop>', mo)
 end
 
+-- ── Notify ────────────────────────────────────────────────────────────────────
 function M.notify(msg, level, opts)
   opts  = opts or {}
   level = level or vim.log.levels.INFO
   if M.backend == 'snacks' then
     local ok, snacks = pcall(require, 'snacks')
     if ok then
-      local lm = { [vim.log.levels.ERROR] = 'error', [vim.log.levels.WARN] = 'warn', [vim.log.levels.INFO] = 'info' }
+      local lm = {
+        [vim.log.levels.ERROR] = 'error',
+        [vim.log.levels.WARN]  = 'warn',
+        [vim.log.levels.INFO]  = 'info',
+      }
       snacks.notify(msg, { level = lm[level] or 'info', title = opts.title or 'Marvin' })
       return
     end
@@ -510,7 +504,7 @@ function M.notify(msg, level, opts)
   vim.notify(msg, level, { title = opts.title or 'Marvin' })
 end
 
--- Maven goal menu
+-- ── Maven goal menu (used by marvin.ui directly) ──────────────────────────────
 function M.show_goal_menu(on_back)
   local project = require('marvin.project')
   if not project.validate_environment() then return end
@@ -558,7 +552,7 @@ function M.get_common_goals()
 end
 
 function M.show_profile_menu(goal, on_back)
-  local project = require('marvin.project').get_project()
+  local project = require('marvin.project').get()
   if not project or not project.info or #project.info.profiles == 0 then
     vim.notify('No profiles found in pom.xml', vim.log.levels.WARN)
     require('marvin.executor').run(goal); return
@@ -567,17 +561,18 @@ function M.show_profile_menu(goal, on_back)
   for _, pid in ipairs(project.info.profiles) do
     profiles[#profiles + 1] = { id = pid, label = pid, icon = '', desc = 'Maven profile' }
   end
-  M.select(profiles, { prompt = 'Select Profile', on_back = on_back }, function(choice)
-    if choice then require('marvin.executor').run(goal, { profile = choice.id }) end
-  end)
+  M.select(profiles, { prompt = 'Select Profile', on_back = on_back },
+    function(choice)
+      if choice then require('marvin.executor').run(goal, { profile = choice.id }) end
+    end)
 end
 
 function M.show_options_menu()
   M.input({ prompt = 'Maven goal(s)' }, function(custom_goal)
-    if not custom_goal or custom_goal == '' then return end
+    if not custom_goal then return end
     M.input({ prompt = 'Additional options (optional)' }, function(extra)
       local full = custom_goal
-      if extra and extra ~= '' then full = full .. ' ' .. extra end
+      if extra then full = full .. ' ' .. extra end
       require('marvin.executor').run(full)
     end)
   end)

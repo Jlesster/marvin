@@ -1,68 +1,28 @@
+-- lua/marvin/keymaps.lua
 local M = {}
 
-function M.setup(config)
-  local keymaps = config.keymaps or {}
-
-  -- Only set up keymaps if the table is not empty
-  if vim.tbl_count(keymaps) == 0 then
-    return
+function M.register(km)
+  km = km or {}
+  local function map(lhs, rhs, desc)
+    if lhs and lhs ~= '' then
+      vim.keymap.set('n', lhs, rhs, { silent = true, desc = desc })
+    end
   end
 
-  if keymaps.run_goal then
-    vim.keymap.set('n', keymaps.run_goal, ':Maven<CR>', {
-      desc = 'Open Maven goal menu',
-      silent = true,
-    })
-  end
+  -- Marvin: project dashboard
+  map(km.dashboard, function() require('marvin.dashboard').show() end,
+    'Marvin: Project dashboard')
 
-  if keymaps.new_java then
-    vim.keymap.set('n', keymaps.new_java, ':JavaNew<CR>', {
-      desc = 'Create new Java file',
-      silent = true,
-    })
-  end
+  -- Jason: task runner dashboard
+  map(km.jason, function() require('marvin.jason_dashboard').show() end,
+    'Jason: Task runner dashboard')
 
-  if keymaps.clean then
-    vim.keymap.set('n', keymaps.clean, ':MavenClean<CR>', {
-      desc = 'Run mvn clean',
-      silent = true,
-    })
-  end
-
-  if keymaps.test then
-    vim.keymap.set('n', keymaps.test, ':MavenTest<CR>', {
-      desc = 'Run mvn test',
-      silent = true,
-    })
-  end
-
-  if keymaps.package then
-    vim.keymap.set('n', keymaps.package, ':MavenPackage<CR>', {
-      desc = 'Run mvn package',
-      silent = true,
-    })
-  end
-
-  if keymaps.install then
-    vim.keymap.set('n', keymaps.install, ':MavenExec install<CR>', {
-      desc = 'Run mvn install',
-      silent = true,
-    })
-  end
-
-  if keymaps.new_project then
-    vim.keymap.set('n', keymaps.new_project, ':MavenNew<CR>', {
-      desc = 'Create new Maven project',
-      silent = true,
-    })
-  end
-
-  if keymaps.dashboard then
-    vim.keymap.set('n', keymaps.dashboard, ':MavenDashboard<CR>', {
-      desc = 'Open Marvin dashboard',
-      silent = true,
-    })
-  end
+  -- Jason: direct actions
+  map(km.jason_build,   function() require('marvin.build').build()         end, 'Jason: Build')
+  map(km.jason_run,     function() require('marvin.build').run()           end, 'Jason: Run')
+  map(km.jason_test,    function() require('marvin.build').test()          end, 'Jason: Test')
+  map(km.jason_clean,   function() require('marvin.build').clean()         end, 'Jason: Clean')
+  map(km.jason_console, function() require('marvin.console').toggle()      end, 'Jason: Console')
 end
 
 return M

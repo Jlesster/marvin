@@ -1,104 +1,52 @@
+-- lua/marvin/generator.lua
 local M = {}
 
--- Create centered popup window
-local function create_popup(title, width, height)
-  local buf = vim.api.nvim_create_buf(false, true)
-  local ui = vim.api.nvim_list_uis()[1]
+local function ui() return require('marvin.ui') end
 
-  local win_width = width > 1 and width or math.floor(width * ui.width)
-  local win_height = height > 1 and height or math.floor(height * ui.height)
-  local row = math.floor((ui.height - win_height) / 2)
-  local col = math.floor((ui.width - win_width) / 2)
-
-  local opts = {
-    relative = 'editor',
-    width = win_width,
-    height = win_height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = {
-      { '╭', 'FloatBorder' },
-      { '─', 'FloatBorder' },
-      { '╮', 'FloatBorder' },
-      { '│', 'FloatBorder' },
-      { '╯', 'FloatBorder' },
-      { '─', 'FloatBorder' },
-      { '╰', 'FloatBorder' },
-      { '│', 'FloatBorder' },
-    },
-    title = title and { { ' ' .. title .. ' ', 'FloatTitle' } } or nil,
-    title_pos = 'center',
-  }
-
-  local win = vim.api.nvim_open_win(buf, true, opts)
-  vim.api.nvim_win_set_option(win, 'winhl', 'Normal:Normal,FloatBorder:FloatBorder')
-  vim.api.nvim_win_set_option(win, 'cursorline', true)
-
-  return buf, win
-end
-
--- Entry point
 function M.create_project()
   M.scan_local_archetypes()
 end
 
--- Scan for local archetypes
 function M.scan_local_archetypes()
-  local ui = require('marvin.ui')
-  ui.notify('🔍 Scanning local Maven repository...', vim.log.levels.INFO)
+  ui().notify('Scanning local Maven repository…', vim.log.levels.INFO)
 
-  local home = os.getenv('HOME') or os.getenv('USERPROFILE')
-  local m2_repo = home .. '/.m2/repository'
-
-  -- Try to find archetype JARs
-  local cmd = string.format('find "%s" -type f -name "*archetype*.jar" 2>/dev/null | grep -v "maven-archetype-plugin"',
+  local home             = os.getenv('HOME') or os.getenv('USERPROFILE')
+  local m2_repo          = home .. '/.m2/repository'
+  local cmd              = string.format(
+    'find "%s" -type f -name "*archetype*.jar" 2>/dev/null | grep -v "maven-archetype-plugin"',
     m2_repo)
 
-  local archetypes = {}
-  local seen = {}
+  local archetypes, seen = {}, {}
 
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
-    on_stdout = function(_, data, _)
+    on_stdout = function(_, data)
       for _, line in ipairs(data) do
-        if line and line ~= '' then
-          -- Parse: ~/.m2/repository/org/jless/jless-schema-archetype/1.0/jless-schema-archetype-1.0.jar
-          local parts = vim.split(line, '/')
-
-          -- Find repository index
+        if line ~= '' then
+          local parts    = vim.split(line, '/')
           local repo_idx = nil
-          for i, part in ipairs(parts) do
-            if part == 'repository' then
-              repo_idx = i
-              break
+          for i, p in ipairs(parts) do
+            if p == 'repository' then
+              repo_idx = i; break
             end
           end
-
           if repo_idx and #parts >= repo_idx + 3 then
-            local version = parts[#parts - 1]     -- The directory before the jar
-            local artifact_id = parts[#parts - 2] -- The directory before version
-
-            -- Build groupId from everything between repository and artifactId
-            local group_parts = {}
-            for i = repo_idx + 1, #parts - 3 do
-              table.insert(group_parts, parts[i])
-            end
-            local group_id = table.concat(group_parts, '.')
-
+            local version     = parts[#parts - 1]
+            local artifact_id = parts[#parts - 2]
+            local gparts      = {}
+            for i = repo_idx + 1, #parts - 3 do gparts[#gparts + 1] = parts[i] end
+            local group_id = table.concat(gparts, '.')
             if group_id ~= '' and artifact_id ~= '' and version ~= '' then
               local key = group_id .. ':' .. artifact_id .. ':' .. version
-
               if not seen[key] then
                 seen[key] = true
-                table.insert(archetypes, {
-                  group_id = group_id,
+                archetypes[#archetypes + 1] = {
+                  group_id    = group_id,
                   artifact_id = artifact_id,
-                  version = version,
-                  display = artifact_id .. ' (' .. version .. ')',
-                  coordinates = key,
-                })
-                print('Found archetype: ' .. key)
+                  version     = version,
+                  label       = artifact_id,
+                  desc        = 'v' .. version .. '  ' .. group_id,
+                }
               end
             end
           end
@@ -108,10 +56,8 @@ function M.scan_local_archetypes()
     on_exit = function()
       vim.schedule(function()
         if #archetypes == 0 then
-          ui.notify('No local archetypes found in ' .. m2_repo, vim.log.levels.WARN)
-          print('No archetypes found. Check ~/.m2/repository')
+          ui().notify('No local archetypes found in ' .. m2_repo, vim.log.levels.WARN)
         else
-          print('Total archetypes found: ' .. #archetypes)
           M.show_archetype_menu(archetypes)
         end
       end)
@@ -119,349 +65,160 @@ function M.scan_local_archetypes()
   })
 end
 
--- Show pretty archetype selection menu
+-- ── Archetype picker ──────────────────────────────────────────────────────────
 function M.show_archetype_menu(archetypes)
-  local lines = {}
-  local selectable = {}
-
-  table.insert(lines, '')
-  table.insert(lines, '  🔨 Maven Project Generator')
-  table.insert(lines, '')
-  table.insert(lines, '  Select an archetype to create your new project')
-  table.insert(lines, '')
-  table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
-  table.insert(lines, '')
-
-  for i, archetype in ipairs(archetypes) do
-    local line_num = #lines + 1
-    table.insert(lines, string.format('    📦 %s', archetype.artifact_id))
-    table.insert(lines, string.format('       v%s  •  %s', archetype.version, archetype.group_id))
-    table.insert(lines, '')
-    table.insert(selectable, line_num)
+  local items = {}
+  for _, a in ipairs(archetypes) do
+    items[#items + 1] = {
+      label      = a.label,
+      desc       = a.desc,
+      icon       = '󰏗',
+      _archetype = a,
+    }
   end
 
-  table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
-  table.insert(lines, '')
-  table.insert(lines, '  ⌨  Navigation: ↑/↓ or j/k  │  ⏎ Select  │  q Cancel')
-  table.insert(lines, '')
-
-  local buf, win = create_popup('✨ New Maven Project', 76, #lines)
-
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
-
-  -- Highlighting
-  local ns = vim.api.nvim_create_namespace('marvin_menu')
-  for i, line in ipairs(lines) do
-    if line:match('🔨') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
-    elseif line:match('Select an archetype') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-    elseif line:match('═') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
-    elseif line:match('📦') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'String', i - 1, 0, -1)
-    elseif line:match('⌨') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-    elseif line:match('  •  ') then
-      vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-    end
-  end
-
-  -- Selection state
-  local current_idx = 1
-  local highlight_ns = vim.api.nvim_create_namespace('marvin_highlight')
-
-  local function update_highlight()
-    vim.api.nvim_buf_clear_namespace(buf, highlight_ns, 0, -1)
-    local line_num = selectable[current_idx]
-    -- Highlight the archetype name and details
-    vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'Visual', line_num - 1, 0, -1)
-    vim.api.nvim_buf_add_highlight(buf, highlight_ns, 'Visual', line_num, 0, -1)
-    vim.api.nvim_win_set_cursor(win, { line_num, 0 })
-  end
-
-  update_highlight()
-
-  -- Keymaps
-  local function select()
-    vim.api.nvim_win_close(win, true)
-    M.show_project_wizard(archetypes[current_idx])
-  end
-
-  local opts = { noremap = true, silent = true, buffer = buf }
-
-  vim.keymap.set('n', 'j', function()
-    if current_idx < #archetypes then
-      current_idx = current_idx + 1
-      update_highlight()
-    end
-  end, opts)
-
-  vim.keymap.set('n', 'k', function()
-    if current_idx > 1 then
-      current_idx = current_idx - 1
-      update_highlight()
-    end
-  end, opts)
-
-  vim.keymap.set('n', '<Down>', function()
-    if current_idx < #archetypes then
-      current_idx = current_idx + 1
-      update_highlight()
-    end
-  end, opts)
-
-  vim.keymap.set('n', '<Up>', function()
-    if current_idx > 1 then
-      current_idx = current_idx - 1
-      update_highlight()
-    end
-  end, opts)
-
-  vim.keymap.set('n', '<CR>', select, opts)
-  vim.keymap.set('n', 'q', function() vim.api.nvim_win_close(win, true) end, opts)
-  vim.keymap.set('n', '<Esc>', function() vim.api.nvim_win_close(win, true) end, opts)
+  ui().select(items, {
+    prompt        = 'New Maven Project  — Select Archetype',
+    enable_search = true,
+    format_item   = function(it) return it.label end,
+  }, function(choice)
+    if choice then M.show_project_wizard(choice._archetype) end
+  end)
 end
 
--- Show pretty project configuration wizard
+-- ── Project wizard ────────────────────────────────────────────────────────────
 function M.show_project_wizard(archetype)
   local details = {
-    group_id = 'com.example',
+    group_id    = 'com.example',
     artifact_id = 'my-app',
-    version = '1.0-SNAPSHOT',
+    version     = '1.0-SNAPSHOT',
   }
 
-  local fields = {
-    { key = 'group_id',    label = 'Group ID',    hint = 'e.g., com.mycompany' },
-    { key = 'artifact_id', label = 'Artifact ID', hint = 'e.g., my-awesome-project' },
-    { key = 'version',     label = 'Version',     hint = 'e.g., 1.0-SNAPSHOT' },
-  }
-
-  local current_field = 1
-
-  local function render()
-    local lines = {}
-
-    table.insert(lines, '')
-    table.insert(lines, '  📝 Project Configuration')
-    table.insert(lines, '')
-    table.insert(lines, string.format('  Creating from: %s v%s', archetype.artifact_id, archetype.version))
-    table.insert(lines, '')
-    table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
-    table.insert(lines, '')
-
-    for i, field in ipairs(fields) do
-      local is_current = i == current_field
-      local value = details[field.key]
-
-      if is_current then
-        table.insert(lines, '    ▶ ' .. field.label)
-        table.insert(lines, '      ' .. value .. ' ◀')
-        table.insert(lines, '      💡 ' .. field.hint)
-      else
-        table.insert(lines, '      ' .. field.label)
-        table.insert(lines, '      ' .. value)
-      end
-      table.insert(lines, '')
-    end
-
-    table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
-    table.insert(lines, '')
-    table.insert(lines, '  📋 Preview')
-    table.insert(lines, string.format('     %s:%s:%s', details.group_id, details.artifact_id, details.version))
-    table.insert(lines, '')
-    table.insert(lines, '  ═══════════════════════════════════════════════════════════════════')
-    table.insert(lines, '')
-    table.insert(lines, '  ⌨  Tab/Shift-Tab: Navigate  │  ⏎ Edit  │  Ctrl-G Generate  │  q Cancel')
-    table.insert(lines, '')
-
-    return lines
-  end
-
-  local buf, win = create_popup('✨ Configure Project', 76, 28)
-
-  local function update_display()
-    local lines = render()
-    vim.api.nvim_buf_set_option(buf, 'modifiable', true)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-
-    -- Highlighting
-    local ns = vim.api.nvim_create_namespace('marvin_wizard')
-    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-
-    for i, line in ipairs(lines) do
-      if line:match('📝') or line:match('📋') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'Title', i - 1, 0, -1)
-      elseif line:match('Creating from:') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-      elseif line:match('═') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'FloatBorder', i - 1, 0, -1)
-      elseif line:match('▶') or line:match('◀') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'Visual', i - 1, 0, -1)
-      elseif line:match('💡') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-      elseif line:match('⌨') then
-        vim.api.nvim_buf_add_highlight(buf, ns, 'Comment', i - 1, 0, -1)
-      end
-    end
-  end
-
-  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
-  update_display()
-
-  local function edit_field()
-    local field = fields[current_field]
-    vim.ui.input({
-      prompt = field.label .. ': ',
-      default = details[field.key],
-    }, function(input)
-      if input and input ~= '' then
-        details[field.key] = input
-        update_display()
-      end
+  local function ask_version()
+    ui().input({ prompt = '󰏷 Version', default = details.version }, function(v)
+      if not v then return end
+      details.version = v
+      M.confirm_and_generate(archetype, details)
     end)
   end
 
-  local function generate()
-    vim.api.nvim_win_close(win, true)
-
-    vim.ui.input({
-      prompt = '📁 Directory: ',
-      default = vim.fn.getcwd(),
-      completion = 'dir',
-    }, function(dir)
-      if dir then
-        M.generate_project(archetype, details, dir)
-      end
+  local function ask_artifact()
+    ui().input({ prompt = '󰏗 Artifact ID', default = details.artifact_id }, function(a)
+      if not a then return end
+      details.artifact_id = a
+      ask_version()
     end)
   end
 
-  local opts = { noremap = true, silent = true, buffer = buf }
-
-  vim.keymap.set('n', '<Tab>', function()
-    current_field = current_field % #fields + 1
-    update_display()
-  end, opts)
-
-  vim.keymap.set('n', '<S-Tab>', function()
-    current_field = current_field - 1
-    if current_field < 1 then current_field = #fields end
-    update_display()
-  end, opts)
-
-  vim.keymap.set('n', '<CR>', edit_field, opts)
-  vim.keymap.set('n', 'e', edit_field, opts)
-  vim.keymap.set('n', '<C-g>', generate, opts)
-  vim.keymap.set('n', 'q', function() vim.api.nvim_win_close(win, true) end, opts)
-  vim.keymap.set('n', '<Esc>', function() vim.api.nvim_win_close(win, true) end, opts)
+  ui().input({ prompt = '󰬷 Group ID', default = details.group_id }, function(g)
+    if not g then return end
+    details.group_id = g
+    ask_artifact()
+  end)
 end
 
--- Get project details from user
-function M.get_project_details(archetype)
-  M.show_project_wizard(archetype)
+-- ── Confirmation / edit menu ──────────────────────────────────────────────────
+function M.confirm_and_generate(archetype, details)
+  local coord = details.group_id .. ':' .. details.artifact_id .. ':' .. details.version
+
+  ui().select({
+    { id = 'confirm', icon = '󰄬', label = 'Generate Project', desc = coord },
+    { id = 'edit_group', icon = '󰬷', label = 'Change Group ID', desc = details.group_id },
+    { id = 'edit_artifact', icon = '󰏗', label = 'Change Artifact ID', desc = details.artifact_id },
+    { id = 'edit_version', icon = '󰏷', label = 'Change Version', desc = details.version },
+    { id = 'cancel', icon = '󰅖', label = 'Cancel', desc = '' },
+  }, {
+    prompt      = 'New Maven Project  — ' .. archetype.artifact_id .. ' v' .. archetype.version,
+    on_back     = function() M.show_archetype_menu_cached(archetype) end,
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if not choice or choice.id == 'cancel' then return end
+
+    if choice.id == 'confirm' then
+      ui().input({ prompt = '󰉋 Output Directory', default = vim.fn.getcwd() }, function(dir)
+        if dir then M.generate_project(archetype, details, dir) end
+      end)
+    elseif choice.id == 'edit_group' then
+      ui().input({ prompt = '󰬷 Group ID', default = details.group_id }, function(v)
+        if v then details.group_id = v end
+        M.confirm_and_generate(archetype, details)
+      end)
+    elseif choice.id == 'edit_artifact' then
+      ui().input({ prompt = '󰏗 Artifact ID', default = details.artifact_id }, function(v)
+        if v then details.artifact_id = v end
+        M.confirm_and_generate(archetype, details)
+      end)
+    elseif choice.id == 'edit_version' then
+      ui().input({ prompt = '󰏷 Version', default = details.version }, function(v)
+        if v then details.version = v end
+        M.confirm_and_generate(archetype, details)
+      end)
+    end
+  end)
 end
 
--- Generate the Maven project
+-- ── Maven execution ───────────────────────────────────────────────────────────
 function M.generate_project(archetype, details, directory)
   local config = require('marvin').config
-  local ui = require('marvin.ui')
-
-  -- Build Maven command
-  local cmd = string.format(
+  local cmd    = string.format(
     '%s archetype:generate -B ' ..
-    '-DarchetypeGroupId=%s ' ..
-    '-DarchetypeArtifactId=%s ' ..
-    '-DarchetypeVersion=%s ' ..
-    '-DgroupId=%s ' ..
-    '-DartifactId=%s ' ..
-    '-Dversion=%s ' ..
-    '-Dpackage=%s',
+    '-DarchetypeGroupId=%s -DarchetypeArtifactId=%s -DarchetypeVersion=%s ' ..
+    '-DgroupId=%s -DartifactId=%s -Dversion=%s -Dpackage=%s',
     config.maven_command,
-    archetype.group_id,
-    archetype.artifact_id,
-    archetype.version,
-    details.group_id,
-    details.artifact_id,
-    details.version,
-    details.group_id
-  )
+    archetype.group_id, archetype.artifact_id, archetype.version,
+    details.group_id, details.artifact_id, details.version, details.group_id)
 
-  ui.notify('🔨 Generating project: ' .. details.artifact_id, vim.log.levels.INFO)
-  print('Running: ' .. cmd)
+  ui().notify('Generating ' .. details.artifact_id .. '…', vim.log.levels.INFO)
 
   local output = {}
-
   vim.fn.jobstart(cmd, {
-    cwd = directory,
+    cwd             = directory,
     stdout_buffered = true,
     stderr_buffered = true,
-    on_stdout = function(_, data, _)
-      for _, line in ipairs(data) do
-        if line ~= '' then
-          table.insert(output, line)
-          print('[MAVEN] ' .. line)
-        end
-      end
+    on_stdout       = function(_, data)
+      for _, l in ipairs(data) do if l ~= '' then output[#output + 1] = l end end
     end,
-    on_stderr = function(_, data, _)
-      for _, line in ipairs(data) do
-        if line ~= '' then
-          table.insert(output, line)
-          print('[MAVEN ERR] ' .. line)
-        end
-      end
+    on_stderr       = function(_, data)
+      for _, l in ipairs(data) do if l ~= '' then output[#output + 1] = l end end
     end,
-    on_exit = function(_, exit_code, _)
-      if exit_code == 0 then
-        -- Fix broken Eclipse files if they exist
-        local project_path = directory .. '/' .. details.artifact_id
-        M.fix_eclipse_files(project_path, details.version)
+    on_exit         = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          local proj_path = directory .. '/' .. details.artifact_id
+          M.fix_eclipse_files(proj_path, details.version)
+          ui().notify('✅ Project created: ' .. details.artifact_id, vim.log.levels.INFO)
 
-        ui.notify('✅ Project created successfully!', vim.log.levels.INFO)
-
-        -- Ask to open
-        vim.ui.select({ 'Yes', 'No' }, { prompt = 'Open project now?' }, function(choice)
-          if choice == 'Yes' then
-            vim.cmd('cd ' .. vim.fn.fnameescape(project_path))
-            vim.cmd('edit ' .. vim.fn.fnameescape(project_path .. '/pom.xml'))
-          end
-        end)
-      else
-        ui.notify('❌ Project generation failed!', vim.log.levels.ERROR)
-        print('Exit code: ' .. exit_code)
-        print('Output:\n' .. table.concat(output, '\n'))
-      end
+          ui().select({
+            { id = 'yes', icon = '󰄬', label = 'Open project', desc = proj_path },
+            { id = 'no', icon = '󰅖', label = 'Stay here', desc = '' },
+          }, {
+            prompt      = 'Project ready!',
+            format_item = function(it) return it.label end,
+          }, function(choice)
+            if choice and choice.id == 'yes' then
+              vim.cmd('cd ' .. vim.fn.fnameescape(proj_path))
+              vim.cmd('edit ' .. vim.fn.fnameescape(proj_path .. '/pom.xml'))
+            end
+          end)
+        else
+          ui().notify('❌ Generation failed (exit ' .. code .. ')', vim.log.levels.ERROR)
+        end
+      end)
     end,
   })
 end
 
--- Fix broken Eclipse .classpath and .project files
+-- ── Eclipse fix ───────────────────────────────────────────────────────────────
 function M.fix_eclipse_files(project_path, version)
-  local files_to_fix = {
-    project_path .. '/.classpath',
-    project_path .. '/.project',
-  }
-
-  for _, filepath in ipairs(files_to_fix) do
-    if vim.fn.filereadable(filepath) == 1 then
-      local lines = vim.fn.readfile(filepath)
-      local fixed = false
-
+  for _, fp in ipairs({ project_path .. '/.classpath', project_path .. '/.project' }) do
+    if vim.fn.filereadable(fp) == 1 then
+      local lines, fixed = vim.fn.readfile(fp), false
       for i, line in ipairs(lines) do
-        -- Fix: <?xml version="1.0-SNAPSHOT" -> <?xml version="1.0"
         if line:match('<?xml version="' .. vim.pesc(version) .. '"') then
-          lines[i] = line:gsub(vim.pesc(version), '1.0')
-          fixed = true
+          lines[i] = line:gsub(vim.pesc(version), '1.0'); fixed = true
         end
       end
-
-      if fixed then
-        vim.fn.writefile(lines, filepath)
-        print('Fixed Eclipse file: ' .. filepath)
-      end
+      if fixed then vim.fn.writefile(lines, fp) end
     end
   end
 end

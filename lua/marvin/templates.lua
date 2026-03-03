@@ -3,7 +3,7 @@ local M = {}
 -- Get package from current file path
 function M.get_package_from_path()
   local current_file = vim.api.nvim_buf_get_name(0)
-  local project = require('marvin.project').get_project()
+  local project = require('marvin.project').get()
 
   if not project then return nil end
 
@@ -35,7 +35,7 @@ end
 
 -- Get default package
 function M.get_default_package()
-  local project = require('marvin.project').get_project()
+  local project = require('marvin.project').get()
   if project and project.info and project.info.group_id then
     return project.info.group_id
   end

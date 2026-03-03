@@ -2,7 +2,7 @@
 local M = {}
 
 local function scan_packages()
-  local project = require('marvin.project').get_project()
+  local project = require('marvin.project').get()
   if not project then return {} end
 
   local packages = {}
@@ -51,6 +51,8 @@ local function get_package_depth(name)
   return select(2, name:gsub('%.', '.'))
 end
 
+-- ── Package selector ──────────────────────────────────────────────────────────
+-- on_back: called when user presses <BS> — should re-open the file-type menu.
 function M.select_package(callback, on_back)
   local templates = require('marvin.templates')
   local ui        = require('marvin.ui')
@@ -95,7 +97,7 @@ function M.select_package(callback, on_back)
           value = pkg.name,
           label = pkg.name,
           icon = '󰏗',
-          desc = string.format('%d files * %s', pkg.file_count, ti)
+          desc = string.format('%d files * %s', pkg.file_count, ti),
         })
       end
     end
@@ -103,17 +105,17 @@ function M.select_package(callback, on_back)
     if #sub_pkgs > 0 then
       add({ label = 'Subpackages', is_separator = true })
       for _, pkg in ipairs(sub_pkgs) do
-        local depth = get_package_depth(pkg.name)
+        local depth  = get_package_depth(pkg.name)
         local indent = string.rep('  ', depth - 1)
-        local ti = (pkg.types.main and pkg.types.test) and 'main + test'
+        local ti     = (pkg.types.main and pkg.types.test) and 'main + test'
             or pkg.types.main and 'main' or 'test'
-        local segs = {}
+        local segs   = {}
         for s in pkg.name:gmatch('[^.]+') do segs[#segs + 1] = s end
         add({
           value = pkg.name,
           label = indent .. '`- ' .. segs[#segs],
-          icon = '󰉓',
-          desc = string.format('%s * %d files', ti, pkg.file_count)
+          icon  = '󰉓',
+          desc  = string.format('%s * %d files', ti, pkg.file_count),
         })
       end
     end
@@ -122,7 +124,7 @@ function M.select_package(callback, on_back)
   ui.select(items, {
     prompt        = 'Select Package',
     enable_search = true,
-    on_back       = on_back,
+    on_back       = on_back, -- <BS> goes back to file-type menu
     format_item   = function(it) return it.label end,
   }, function(choice)
     if not choice then
@@ -150,6 +152,9 @@ function M.select_package(callback, on_back)
   end)
 end
 
+-- ── File creation wizard ──────────────────────────────────────────────────────
+-- menu_on_back: passed through from show_menu so <BS> in the package picker
+-- re-opens the file-type menu rather than closing entirely.
 function M.create_file_interactive(type_name, options, menu_on_back)
   options         = options or {}
   local templates = require('marvin.templates')
@@ -159,6 +164,7 @@ function M.create_file_interactive(type_name, options, menu_on_back)
     if not class_name or class_name == '' then return end
     vim.cmd('stopinsert')
     vim.schedule(function()
+      -- on_back from the package picker reopens the file-type menu
       M.select_package(function(package_name)
         if not package_name then return end
 
@@ -193,6 +199,7 @@ function M.create_file_interactive(type_name, options, menu_on_back)
         vim.cmd('edit ' .. file_path)
         ui.notify('󰄬 Created ' .. type_name .. ': ' .. class_name, vim.log.levels.INFO)
       end, function()
+        -- <BS> in package picker → back to file-type menu
         M.show_menu(menu_on_back)
       end)
     end)
@@ -200,7 +207,7 @@ function M.create_file_interactive(type_name, options, menu_on_back)
 end
 
 function M.get_file_path(class_name, package_name, type_name)
-  local project = require('marvin.project').get_project()
+  local project = require('marvin.project').get()
   if not project then
     vim.notify('Not in a Maven project', vim.log.levels.ERROR); return nil
   end
@@ -250,6 +257,9 @@ function M.prompt_fields(callback, prompt_text)
   end)
 end
 
+-- ── File-type menu ────────────────────────────────────────────────────────────
+-- on_back: called when user presses <BS> — should re-open whatever called this
+-- (e.g. the Marvin dashboard or the Jason Maven submenu).
 function M.show_menu(on_back)
   local ui = require('marvin.ui')
 
@@ -274,7 +284,7 @@ function M.show_menu(on_back)
 
   ui.select(types, {
     prompt      = 'Create Java File',
-    on_back     = on_back,
+    on_back     = on_back, -- <BS> returns to wherever called show_menu
     format_item = function(it) return it.label end,
   }, function(choice)
     if not choice then return end
@@ -290,13 +300,15 @@ function M.show_menu(on_back)
     elseif choice.id == 'enum' then
       M.prompt_enum_values(function(values)
         if values then
-          options.values = values; M.create_file_interactive('Enum', options, on_back)
+          options.values = values
+          M.create_file_interactive('Enum', options, on_back)
         end
       end)
     elseif choice.id == 'record' then
       M.prompt_fields(function(fields)
         if fields then
-          options.fields = fields; M.create_file_interactive('Record', options, on_back)
+          options.fields = fields
+          M.create_file_interactive('Record', options, on_back)
         end
       end, '󰏗 Record Fields (Type name, Type name, ...)')
     elseif choice.id == 'abstract' then
