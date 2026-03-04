@@ -88,18 +88,59 @@ end
 local function is_valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
 local function is_valid_buf(b) return b and vim.api.nvim_buf_is_valid(b) end
 
+-- ── Safe line helpers ─────────────────────────────────────────────────────────
+-- nvim_buf_set_lines rejects strings containing '\n'. This helper splits any
+-- string on newlines and returns a flat list of single-line strings, with
+-- carriage returns stripped (common in terminal output on some systems).
+local function split_line(s)
+  s = tostring(s or ''):gsub('\r', '')
+  if not s:find('\n', 1, true) then return { s } end
+  local out = {}
+  for part in (s .. '\n'):gmatch('([^\n]*)\n') do
+    out[#out + 1] = part
+  end
+  return out
+end
+
+-- Append a (potentially multi-line) string to the lines/hls accumulators.
+-- `prefix` is prepended to the FIRST sub-line only; continuation lines get
+-- the same width of spaces so output stays visually aligned.
+-- `specs` highlights are applied to EACH sub-line.
+local function add_line(lines, hls, raw, prefix, specs)
+  prefix         = prefix or ''
+  local cont_pad = string.rep(' ', vim.fn.strdisplaywidth(prefix))
+  local parts    = split_line(raw)
+  for i, part in ipairs(parts) do
+    local ln = (i == 1 and prefix or cont_pad) .. part
+    lines[#lines + 1] = ln
+    local li = #lines - 1
+    for _, s in ipairs(specs or {}) do
+      hls[#hls + 1] = { line = li, hl = s[1], cs = s[2], ce = s[3] }
+    end
+  end
+end
+
+-- Simple single-line add (no prefix splitting needed, but still sanitise).
+local function add_raw(lines, hls, raw, specs)
+  -- raw should not contain newlines at this point, but sanitise anyway
+  local safe = tostring(raw or ''):gsub('\r', ''):gsub('\n', ' ')
+  lines[#lines + 1] = safe
+  local li = #lines - 1
+  for _, s in ipairs(specs or {}) do
+    hls[#hls + 1] = { line = li, hl = s[1], cs = s[2], ce = s[3] }
+  end
+end
+
 local LIST_W = 42
 
 local function render_list()
   if not is_valid_buf(state.list_buf) then return end
   local lines, hls = {}, {}
-  local function add(ln, specs)
-    lines[#lines + 1] = ln
-    for _, s in ipairs(specs or {}) do
-      hls[#hls + 1] = { line = #lines - 1, hl = s[1], cs = s[2], ce = s[3] }
-    end
+
+  local function add(ln, specs) add_raw(lines, hls, ln, specs) end
+  local function ahr(li, hl_name)
+    hls[#hls + 1] = { line = li, hl = hl_name, cs = 0, ce = -1 }
   end
-  local function ahr(li, hl_name) hls[#hls + 1] = { line = li, hl = hl_name, cs = 0, ce = -1 } end
 
   add('  󰋚 Task Console', { { 'JasonConTitle', 2, -1 } })
   add(string.rep('─', LIST_W), { { 'JasonConSep', 0, -1 } })
@@ -156,7 +197,8 @@ local function render_list()
   vim.api.nvim_set_option_value('modifiable', false, { buf = state.list_buf })
   vim.api.nvim_buf_clear_namespace(state.list_buf, state.ns_list, 0, -1)
   for _, h2 in ipairs(hls) do
-    pcall(vim.api.nvim_buf_add_highlight, state.list_buf, state.ns_list, h2.hl, h2.line, h2.cs, h2.ce)
+    pcall(vim.api.nvim_buf_add_highlight,
+      state.list_buf, state.ns_list, h2.hl, h2.line, h2.cs, h2.ce)
   end
 end
 
@@ -165,12 +207,9 @@ local function render_output()
   local h          = history()
   local entry      = h[state.sel]
   local lines, hls = {}, {}
-  local function add(ln, specs)
-    lines[#lines + 1] = ln
-    for _, s in ipairs(specs or {}) do
-      hls[#hls + 1] = { line = #lines - 1, hl = s[1], cs = s[2], ce = s[3] }
-    end
-  end
+
+  -- Wrapper: single fixed-content line (no embedded newlines expected, but sanitise)
+  local function add(ln, specs) add_raw(lines, hls, ln, specs) end
 
   if not entry then
     local running = running_jobs()
@@ -179,7 +218,9 @@ local function render_output()
       add('  ⟳ ' .. (job.title or job.cmd or 'Running…'), { { 'JasonConRunning', 2, 3 } })
       add('', {})
       if job.output then
-        for _, ln in ipairs(job.output) do add('  ' .. ln, {}) end
+        for _, ln in ipairs(job.output) do
+          add_line(lines, hls, ln, '  ', {})
+        end
       else
         add('  (waiting for output…)', { { 'JasonConDim', 0, -1 } })
       end
@@ -191,30 +232,35 @@ local function render_output()
         or (entry.success and '✓ Success' or '✗ Failed')
     local ok_hl  = entry.success == nil and 'JasonConRunning'
         or (entry.success and 'JasonConOk' or 'JasonConFail')
-    add('  ' .. ok_str .. '  ' .. (entry.action or ''), { { ok_hl, 2, 2 + #ok_str } })
+    add('  ' .. ok_str .. '  ' .. (entry.action or ''),
+      { { ok_hl, 2, 2 + #ok_str } })
     add('  cmd: ' .. (entry.cmd or '?'), { { 'JasonConCmd', 7, -1 } })
     if entry.timestamp then
-      add('  ran: ' .. os.date('%H:%M:%S', entry.timestamp) .. '  ' .. ago(entry.timestamp),
-        { { 'JasonConTime', 7, -1 } })
+      add('  ran: ' .. os.date('%H:%M:%S', entry.timestamp)
+        .. '  ' .. ago(entry.timestamp), { { 'JasonConTime', 7, -1 } })
     end
     if entry.duration and entry.duration > 0 then
       add('  dur: ' .. dur(entry.duration), { { 'JasonConDim', 0, -1 } })
     end
     add(string.rep('─', 60), { { 'JasonConSep', 0, -1 } })
+
     local output = entry.output or {}
     if #output == 0 then
       add('  (no captured output)', { { 'JasonConDim', 0, -1 } })
     else
       for _, ln in ipairs(output) do
+        -- Determine highlight based on content (check before splitting)
         local specs = {}
-        if ln:match('%[ERROR%]') or ln:match('^error') or ln:match('FAILED') then
+        local lc = tostring(ln)
+        if lc:match('%[ERROR%]') or lc:match('^error') or lc:match('FAILED') then
           specs = { { 'JasonConFail', 0, -1 } }
-        elseif ln:match('%[WARNING%]') or ln:match('^warning') then
+        elseif lc:match('%[WARNING%]') or lc:match('^warning') or lc:match(': warning:') then
           specs = { { 'JasonConRunning', 0, -1 } }
-        elseif ln:match('%[INFO%]') or ln:match('^%s*at ') then
+        elseif lc:match('%[INFO%]') or lc:match('^%s*at ') then
           specs = { { 'JasonConDim', 0, -1 } }
         end
-        add('  ' .. ln, specs)
+        -- add_line handles embedded \n by splitting into multiple lines
+        add_line(lines, hls, ln, '  ', specs)
       end
     end
   end
@@ -224,7 +270,8 @@ local function render_output()
   vim.api.nvim_set_option_value('modifiable', false, { buf = state.out_buf })
   vim.api.nvim_buf_clear_namespace(state.out_buf, state.ns_out, 0, -1)
   for _, h2 in ipairs(hls) do
-    pcall(vim.api.nvim_buf_add_highlight, state.out_buf, state.ns_out, h2.hl, h2.line, h2.cs, h2.ce)
+    pcall(vim.api.nvim_buf_add_highlight,
+      state.out_buf, state.ns_out, h2.hl, h2.line, h2.cs, h2.ce)
   end
   if is_valid_win(state.out_win) then
     local e  = history()[state.sel]
@@ -317,29 +364,30 @@ function M.open()
 
   local common   = {
     relative = 'editor',
-    height = TOTAL_H,
-    row = ROW,
-    style = 'minimal',
-    zindex = 45,
-    border = 'single',
+    height   = TOTAL_H,
+    row      = ROW,
+    style    = 'minimal',
+    zindex   = 45,
+    border   = 'single',
   }
   state.list_win = vim.api.nvim_open_win(state.list_buf, true,
     vim.tbl_extend('force', common, {
-      width = LIST_W,
-      col = COL,
-      title = { { ' Jason Console ', 'JasonConTitle' } },
+      width     = LIST_W,
+      col       = COL,
+      title     = { { ' Jason Console ', 'JasonConTitle' } },
       title_pos = 'center',
     }))
   state.out_win  = vim.api.nvim_open_win(state.out_buf, false,
     vim.tbl_extend('force', common, {
-      width = OUT_W,
-      col = COL + LIST_W + 1,
-      title = { { ' output ', 'JasonConOutTitle' } },
+      width     = OUT_W,
+      col       = COL + LIST_W + 1,
+      title     = { { ' output ', 'JasonConOutTitle' } },
       title_pos = 'left',
     }))
 
   local function setwhl(w, n, b2)
-    vim.api.nvim_set_option_value('winhl', 'Normal:' .. n .. ',FloatBorder:' .. b2, { win = w })
+    vim.api.nvim_set_option_value('winhl',
+      'Normal:' .. n .. ',FloatBorder:' .. b2, { win = w })
   end
   setwhl(state.list_win, 'JasonConWin', 'JasonConBorder')
   setwhl(state.out_win, 'JasonConOutWin', 'JasonConOutBorder')
@@ -350,7 +398,7 @@ function M.open()
     relativenumber = false,
     signcolumn = 'no',
     scrolloff = 2,
-    cursorline = false
+    cursorline = false,
   }
   for k, v in pairs(base_wopts) do
     pcall(vim.api.nvim_set_option_value, k, v, { win = state.list_win })
@@ -367,13 +415,13 @@ function M.open()
     redraw()
   end
   local function focus_output()
-    if is_valid_win(state.out_win) then vim.api.nvim_set_current_win(state.out_win) end
+    if is_valid_win(state.out_win) then
+      vim.api.nvim_set_current_win(state.out_win)
+    end
   end
   local function rerun_sel()
     local hh = history(); local e = hh[state.sel]
     if not e then return end
-    local p = require('marvin.detector').get()
-    if not p then return end
     require('marvin.build').custom(e.cmd, e.action)
   end
   local function dismiss_sel()
@@ -402,7 +450,9 @@ function M.open()
   vim.keymap.set('n', '<Esc>', M.close, omo)
   vim.keymap.set('n', 'r', rerun_sel, omo)
   vim.keymap.set('n', '<Tab>', function()
-    if is_valid_win(state.list_win) then vim.api.nvim_set_current_win(state.list_win) end
+    if is_valid_win(state.list_win) then
+      vim.api.nvim_set_current_win(state.list_win)
+    end
   end, omo)
 
   vim.api.nvim_create_autocmd('WinClosed', {
