@@ -36,10 +36,8 @@ local function abs(path)
   return vim.fn.expand(vim.fn.fnamemodify(path, ':p')):gsub('/+$', '')
 end
 
--- Shell-escape a single argument for /bin/sh (used via io.popen / execute).
 local function esc(s) return vim.fn.shellescape(tostring(s)) end
 
--- Join a list of strings with spaces, skipping blanks.
 local function join(t)
   local out = {}
   for _, v in ipairs(t) do
@@ -48,7 +46,6 @@ local function join(t)
   return table.concat(out, ' ')
 end
 
--- Single-quote a path for /bin/sh (io.popen always uses /bin/sh).
 local function sh_path(p)
   return "'" .. p:gsub("'", "'\\''") .. "'"
 end
@@ -71,16 +68,9 @@ end
 local function std_flag(lang)
   local cfg = cpp_cfg()
   if cfg.standard then
-    -- cfg.standard might be 'c++17', 'c11', 'c17', 'c++20' etc.
-    -- If it's a C++ standard but we're compiling C, ignore it and use a
-    -- sensible C default instead. A C++ standard contains '+'.
     local is_cpp_std = cfg.standard:find('+', 1, true)
-    if lang == 'c' and is_cpp_std then
-      return 'c11'
-    end
-    if lang == 'cpp' and not is_cpp_std then
-      return 'c++17'
-    end
+    if lang == 'c' and is_cpp_std then return 'c11' end
+    if lang == 'cpp' and not is_cpp_std then return 'c++17' end
     return cfg.standard
   end
   return lang == 'cpp' and 'c++17' or 'c11'
@@ -106,7 +96,6 @@ function CPP.include_flags(root)
       dirs[#dirs + 1] = '-I' .. full
     end
   end
-  -- Deduplicate (e.g. when root IS src)
   local seen, out = {}, {}
   for _, f in ipairs(dirs) do
     if not seen[f] then
@@ -152,7 +141,298 @@ local LINK_MAP = {
   { pat = 'libavcodec',            flags = { '-lavcodec', '-lavutil' } },
 }
 
--- Scan a set of files (passed as a list of absolute paths) for known includes.
+-- ── pkg-config header → package map ──────────────────────────────────────────
+-- Used to auto-inject pkg-config --cflags into compile_commands.json and the
+-- direct build pipeline, so headers like <wlr/backend.h> are found without
+-- the user having to touch anything.
+-- ── Dynamic pkg-config reverse map ──────────────────────────────────────────
+-- Instead of a hardcoded pattern list, we build a header→package map at
+-- runtime by scanning the include dirs advertised by every installed package.
+-- This means any library will be auto-detected as long as it has a .pc file.
+--
+-- The map is built once and cached for the lifetime of the neovim session.
+local _hdr_to_pkg_cache = nil
+
+local function build_header_pkg_map()
+  if _hdr_to_pkg_cache then return _hdr_to_pkg_cache end
+  local map = {} -- 'hb-ft.h' → 'harfbuzz',  'wlr/backend.h' → 'wlroots-0.18'
+
+  -- 1. Get all installed package names
+  local h = io.popen('pkg-config --list-all 2>/dev/null')
+  if not h then
+    _hdr_to_pkg_cache = map; return map
+  end
+  local pkg_names = {}
+  for line in h:lines() do
+    local name = line:match('^(%S+)')
+    if name then pkg_names[#pkg_names + 1] = name end
+  end
+  h:close()
+
+  -- 2. For each package, find its include dirs and scan the headers in them
+  local scanned_dirs = {}
+  for _, pkg in ipairs(pkg_names) do
+    local dirs = {}
+
+    -- a) explicit -I flags from --cflags-only-I
+    local ch = io.popen('pkg-config --cflags-only-I ' .. pkg .. ' 2>/dev/null')
+    if ch then
+      for line in ch:lines() do
+        for token in line:gmatch('%S+') do
+          if token:sub(1, 2) == '-I' then
+            dirs[#dirs + 1] = token:sub(3)
+          end
+        end
+      end
+      ch:close()
+    end
+
+    -- b) includedir variable (catches packages whose headers are in /usr/include
+    --    with no explicit -I since that's the default compiler search path)
+    local ih = io.popen('pkg-config --variable=includedir ' .. pkg .. ' 2>/dev/null')
+    if ih then
+      local d = vim.trim(ih:read('*l') or ''); ih:close()
+      if d ~= '' then dirs[#dirs + 1] = d end
+    end
+
+    -- c) also guess <includedir>/<stem> subdir for packages like harfbuzz
+    --    whose headers live in /usr/include/harfbuzz/ with no -I flag
+    local stem = pkg:match('^([%w]+)') -- 'harfbuzz-gobject' → 'harfbuzz'
+    if stem then
+      for _, base in ipairs({ '/usr/include', '/usr/local/include' }) do
+        local guessed = base .. '/' .. stem
+        if vim.fn.isdirectory(guessed) == 1 then
+          dirs[#dirs + 1] = base    -- so 'harfbuzz/hb-ft.h' maps correctly
+          dirs[#dirs + 1] = guessed -- so flat 'hb-ft.h' also maps
+        end
+      end
+    end
+
+    -- scan each dir
+    for _, dir in ipairs(dirs) do
+      if not scanned_dirs[dir] and vim.fn.isdirectory(dir) == 1 then
+        scanned_dirs[dir] = true
+        -- flat headers: hb-ft.h → pkg
+        local fh = io.popen('ls ' .. vim.fn.shellescape(dir) .. ' 2>/dev/null')
+        if fh then
+          for entry in fh:lines() do
+            if entry:match('%.h$') and not map[entry] then
+              map[entry] = pkg
+            elseif vim.fn.isdirectory(dir .. '/' .. entry) == 1 then
+              -- subdir headers: wlr/backend.h → pkg
+              local sh = io.popen('ls ' .. vim.fn.shellescape(dir .. '/' .. entry) .. ' 2>/dev/null')
+              if sh then
+                for hdr in sh:lines() do
+                  if hdr:match('%.h$') then
+                    local key = entry .. '/' .. hdr
+                    if not map[key] then map[key] = pkg end
+                  end
+                end
+                sh:close()
+              end
+            end
+          end
+          fh:close()
+        end
+      end
+    end
+  end
+
+  _hdr_to_pkg_cache = map
+  return map
+end
+
+-- Look up which pkg-config package provides a given #include path.
+-- include_path is the raw string from #include <...>, e.g. 'wlr/backend.h', 'hb-ft.h'
+local function include_to_pkg(include_path)
+  local map = build_header_pkg_map()
+  -- exact match first
+  if map[include_path] then return map[include_path] end
+  -- try just the filename (for includes like <cairo/cairo.h> → 'cairo.h')
+  local fname = include_path:match('([^/]+)$')
+  if fname and map[fname] then return map[fname] end
+  return nil
+end
+
+-- Scan source tree for pkg-config packages, then return their --cflags tokens
+-- (each -I/path as a separate entry, suitable for inserting into inc_list).
+-- Also returns --libs tokens for lf_list.
+-- Results are cached per root to avoid repeated shell calls.
+
+-- Resolve a base pkg-config name to the actual installed name.
+-- Handles versioned packages: 'wlroots' → 'wlroots-0.18' etc.
+local _pkg_resolve_cache = {}
+local function resolve_pkg(base)
+  if _pkg_resolve_cache[base] ~= nil then return _pkg_resolve_cache[base] or nil end
+  -- 1. Exact name
+  if os.execute('pkg-config --exists ' .. base .. ' 2>/dev/null') == 0 then
+    _pkg_resolve_cache[base] = base; return base
+  end
+  -- 2. Versioned variant: e.g. wlroots-0.18
+  local h = io.popen(
+    "pkg-config --list-all 2>/dev/null | grep -E '^" .. base .. "[-[:space:]]' | head -1 | awk '{print $1}'")
+  if h then
+    local found = vim.trim(h:read('*l') or ''); h:close()
+    if found ~= '' then
+      _pkg_resolve_cache[base] = found; return found
+    end
+  end
+  _pkg_resolve_cache[base] = false; return nil
+end
+
+local _pkg_flag_cache = {}
+function CPP.pkg_config_flags(root)
+  if _pkg_flag_cache[root] then return _pkg_flag_cache[root] end
+
+  local r       = abs(root)
+  local found   = {}
+  local ordered = {}
+
+  -- collect all source+header files
+  local cmd     = string.format(
+    "find %s \\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp'"
+    .. " -o -name '*.cxx' -o -name '*.hxx' \\)"
+    .. " -not -path '*/.marvin-obj/*' -not -path '*/build/*' -not -path '*/builddir/*'"
+    .. " -type f 2>/dev/null",
+    sh_path(r))
+  local files   = {}
+  local h       = io.popen(cmd)
+  if h then
+    for line in h:lines() do
+      local a = vim.trim(line)
+      if a ~= '' then files[#files + 1] = a end
+    end
+    h:close()
+  end
+
+  for _, fpath in ipairs(files) do
+    local ok, lines = pcall(vim.fn.readfile, fpath)
+    if ok then
+      for _, line in ipairs(lines) do
+        local inc = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
+        if inc then
+          local pkg = include_to_pkg(inc)
+          if pkg and not found[pkg] then
+            local resolved = resolve_pkg(pkg)
+            if resolved then
+              found[pkg]            = true
+              ordered[#ordered + 1] = resolved
+            end
+          end
+        end
+      end
+    end
+  end
+
+  local iflags = {}
+  local lflags = {}
+
+  if #ordered > 0 then
+    local pkgs = table.concat(ordered, ' ')
+
+    -- --cflags: split on spaces, keep only -I tokens for inc_list
+    local cf_h = io.popen('pkg-config --cflags ' .. pkgs .. ' 2>/dev/null')
+    if cf_h then
+      local cf_out = cf_h:read('*l') or ''; cf_h:close()
+      for token in cf_out:gmatch('%S+') do
+        iflags[#iflags + 1] = token
+      end
+    end
+
+    -- --libs: split on spaces for lf_list
+    local lf_h = io.popen('pkg-config --libs ' .. pkgs .. ' 2>/dev/null')
+    if lf_h then
+      local lf_out = lf_h:read('*l') or ''; lf_h:close()
+      for token in lf_out:gmatch('%S+') do
+        lflags[#lflags + 1] = token
+      end
+    end
+
+    -- wlroots also needs -DWLR_USE_UNSTABLE if any wlr/ headers are included
+    local needs_wlr = false
+    for _, pkg in ipairs(ordered) do
+      if pkg:match('^wlroots') then
+        needs_wlr = true; break
+      end
+    end
+    if needs_wlr then
+      -- check source files for wlr/ includes to be sure
+      for _, fpath in ipairs(files) do
+        local ok2, ls = pcall(vim.fn.readfile, fpath)
+        if ok2 then
+          for _, line in ipairs(ls) do
+            if line:match('#%s*include%s*[<\"]wlr/') then
+              iflags[#iflags + 1] = '-DWLR_USE_UNSTABLE'
+              needs_wlr = false -- only add once
+              break
+            end
+          end
+          if not needs_wlr then break end
+        end
+      end
+    end
+  end
+
+  local result = { iflags = iflags, lflags = lflags, pkg_names = ordered }
+  _pkg_flag_cache[root] = result
+  return result
+end
+
+local POSIX_HEADERS = {
+  'unistd.h', 'pthread.h', 'sys/types.h', 'sys/stat.h', 'sys/wait.h',
+  'sys/file.h', 'sys/socket.h', 'sys/mman.h', 'sys/select.h',
+  'netinet/in.h', 'arpa/inet.h', 'netdb.h',
+  'dirent.h', 'fcntl.h', 'signal.h', 'termios.h',
+  'openssl/ssl.h', 'openssl/err.h', 'curl/curl.h', 'readline/readline.h',
+}
+
+local POSIX_FUNCTIONS = {
+  'strtok_r', 'strndup', 'strdup', 'stpcpy', 'stpncpy',
+  'getline', 'getdelim', 'dprintf', 'vasprintf', 'asprintf',
+  'fdopen', 'fileno', 'popen', 'pclose',
+  'ftruncate', 'fchmod', 'fchown', 'fsync', 'fdatasync',
+  'openat', 'mkstemp', 'mkdtemp',
+  'fork', 'vfork', 'execvp', 'execve', 'execle', 'execl', 'execv',
+  'setsid', 'setpgid', 'getpgid', 'getsid',
+  'waitpid', 'wait3', 'wait4',
+  'flock', 'lockf', 'fcntl',
+  'opendir', 'readdir', 'closedir', 'scandir', 'nftw', 'ftw',
+  'symlink', 'readlink', 'realpath', 'dirname', 'basename',
+  'socket', 'bind', 'listen', 'accept', 'connect',
+  'send', 'recv', 'sendto', 'recvfrom',
+  'getaddrinfo', 'freeaddrinfo', 'getnameinfo',
+  'clock_gettime', 'clock_settime', 'nanosleep', 'timer_create',
+  'gethostname', 'sysconf', 'pathconf', 'confstr',
+  'getpwnam', 'getpwuid', 'getgrnam', 'getgrgid',
+  'mmap', 'munmap', 'mprotect', 'mlock',
+  'pipe', 'dup', 'dup2', 'dup3',
+  'usleep', 'sleep',
+  'truncate', 'link', 'unlink', 'rmdir', 'chdir', 'getcwd',
+  'chown', 'chmod', 'lstat',
+  'setenv', 'unsetenv', 'putenv',
+  'dlopen', 'dlsym', 'dlclose',
+  'sem_open', 'sem_wait', 'sem_post', 'sem_close', 'sem_unlink',
+  'shm_open', 'shm_unlink',
+  'pthread_create', 'pthread_join', 'pthread_mutex_lock',
+}
+
+local _posix_fn_set = {}
+for _, fn in ipairs(POSIX_FUNCTIONS) do _posix_fn_set[fn] = true end
+
+local _posix_hdr_set = {}
+for _, h in ipairs(POSIX_HEADERS) do _posix_hdr_set[h] = true end
+
+local function lines_need_posix(lines)
+  for _, line in ipairs(lines) do
+    local hdr = line:match('#%s*include%s*[<"]([^>"]+)[>"]')
+    if hdr and _posix_hdr_set[hdr] then return true end
+    for fn in line:gmatch('([%a_][%w_]*)%s*%(') do
+      if _posix_fn_set[fn] then return true end
+    end
+  end
+  return false
+end
+
 local function scan_ldflags_files(file_list)
   local seen = {}
   local out  = {}
@@ -175,6 +455,26 @@ local function scan_ldflags_files(file_list)
   return out
 end
 
+function CPP.needs_posix_define(root)
+  local r   = abs(root)
+  local cmd = string.format(
+    "find %s \\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp'"
+    .. " -o -name '*.cxx' -o -name '*.hxx' \\)"
+    .. " -not -path '*/.marvin-obj/*' -type f 2>/dev/null",
+    sh_path(r))
+  local h   = io.popen(cmd)
+  if not h then return false end
+  for path in h:lines() do
+    local ok, lines = pcall(vim.fn.readfile, vim.trim(path))
+    if ok and lines_need_posix(lines) then
+      h:close()
+      return true
+    end
+  end
+  h:close()
+  return false
+end
+
 function CPP.scan_ldflags(root)
   local r     = abs(root)
   local cmd   = string.format(
@@ -194,9 +494,24 @@ function CPP.scan_ldflags(root)
   return scan_ldflags_files(files)
 end
 
+-- ── Local library flag injection ──────────────────────────────────────────────
+local function inject_local_lib_flags(root, lf_list, inc_list)
+  local ok, local_libs = pcall(require, 'marvin.local_libs')
+  if not ok then return end
+  local lflags = local_libs.build_flags(root)
+  if lflags.lflags ~= '' then
+    for _, f in ipairs(vim.split(lflags.lflags, '%s+')) do
+      if f ~= '' then lf_list[#lf_list + 1] = f end
+    end
+  end
+  if lflags.iflags ~= '' then
+    for _, f in ipairs(vim.split(lflags.iflags, '%s+')) do
+      if f ~= '' then inc_list[#inc_list + 1] = f end
+    end
+  end
+end
+
 -- ── Source file collection ────────────────────────────────────────────────────
--- Returns a sorted list of absolute paths to all .c / .cpp files,
--- excluding the .marvin-obj staging directory.
 function CPP.all_sources(root, lang)
   local r     = abs(root)
   local exts  = lang == 'cpp'
@@ -259,9 +574,6 @@ end
 function CPP.project_lang(p)
   local root = abs(p.root)
 
-  -- Count actual files on disk first — this is the ground truth.
-  -- We always do this regardless of other hints because compiler config
-  -- and filetype can both lie (e.g. g++ set globally, editing a .c file).
   local function count_files(exts_pat)
     local h = io.popen(
       "find " .. sh_path(root)
@@ -275,11 +587,9 @@ function CPP.project_lang(p)
   local n_c   = count_files("-name '*.c'")
   local n_cpp = count_files("-name '*.cpp' -o -name '*.cxx' -o -name '*.cc'")
 
-  -- More C files than C++ → C project, even in a mixed repo
   if n_c > 0 and n_c >= n_cpp then return 'c' end
   if n_cpp > 0 then return 'cpp' end
 
-  -- No files on disk yet (new project) — fall back to softer signals
   local explicit = p.language or p.lang
   if explicit == 'cpp' or explicit == 'c' then return explicit end
 
@@ -287,7 +597,6 @@ function CPP.project_lang(p)
   if ft == 'cpp' then return 'cpp' end
   if ft == 'c' then return 'c' end
 
-  -- Absolute last resort
   local cfg = cpp_cfg()
   if cfg.compiler == 'g++' or cfg.compiler == 'clang++' then return 'cpp' end
   return 'c'
@@ -302,7 +611,6 @@ local function obj_path(root, src_abs)
 end
 
 -- ── Binary path derivation ────────────────────────────────────────────────────
--- Returns the *unescaped* absolute path to the output binary.
 local function binary_path(root, main_file)
   local r = abs(root)
   if main_file then
@@ -312,21 +620,31 @@ local function binary_path(root, main_file)
 end
 
 -- ── Build command (multi-file project) ───────────────────────────────────────
--- Returns a single /bin/sh string. Steps are joined with " && \<newline>  ".
 function CPP.build_cmd(p)
   local root     = abs(p.root)
   local lang     = CPP.project_lang(p)
   local lf_list  = CPP.scan_ldflags(root)
   local inc_list = CPP.include_flags(root)
-  local sources  = CPP.all_sources(root, lang)
-  local obj_dir  = root .. '/.marvin-obj'
+
+  inject_local_lib_flags(root, lf_list, inc_list)
+
+  -- pkg-config: inject --cflags into inc_list, --libs into lf_list
+  local pkg = CPP.pkg_config_flags(root)
+  for _, f in ipairs(pkg.iflags) do inc_list[#inc_list + 1] = f end
+  for _, f in ipairs(pkg.lflags) do lf_list[#lf_list + 1] = f end
+  if #pkg.pkg_names > 0 then
+    vim.notify('[Marvin] pkg-config deps: ' .. table.concat(pkg.pkg_names, ' '), vim.log.levels.INFO)
+  end
+
+  local posix_flag = CPP.needs_posix_define(root) and '-D_POSIX_C_SOURCE=200809L' or nil
+
+  local sources = CPP.all_sources(root, lang)
+  local obj_dir = root .. '/.marvin-obj'
 
   if #sources == 0 then
-    -- Try the other language before giving up entirely
     local other         = lang == 'c' and 'cpp' or 'c'
     local other_sources = CPP.all_sources(root, other)
     if #other_sources > 0 then
-      -- Disk scan and other hints disagreed — trust the files
       sources = other_sources
       lang    = other
     else
@@ -341,18 +659,19 @@ function CPP.build_cmd(p)
 
   local main_file = CPP.find_main_file(root, lang)
   local binary    = binary_path(root, main_file)
-
   local steps     = { 'mkdir -p ' .. esc(obj_dir) }
-
   local obj_files = {}
+
   for _, src in ipairs(sources) do
     local slang               = file_lang(src)
     local cc                  = compiler(slang)
     local std                 = std_flag(slang)
     local obj                 = obj_path(root, src)
     obj_files[#obj_files + 1] = obj
-    steps[#steps + 1]         = string.format('%s -std=%s %s %s -c %s -o %s',
-      cc, std, extra_cflags(), join(inc_list), esc(src), esc(obj))
+    steps[#steps + 1]         = string.format('%s -std=%s %s%s %s -c %s -o %s',
+      cc, std, extra_cflags(),
+      posix_flag and (' ' .. posix_flag) or '',
+      join(inc_list), esc(src), esc(obj))
   end
 
   local link_cc = compiler(main_file and file_lang(main_file) or lang)
@@ -366,31 +685,40 @@ function CPP.build_cmd(p)
 end
 
 -- ── Single-file build command ─────────────────────────────────────────────────
--- Compiles exactly one .c/.cpp file. No object staging.
--- Returns { cmd = string, binary = string }.
 function CPP.build_single_file_cmd(file_abs, root_abs)
-  local f      = abs(file_abs)
-  local root   = abs(root_abs or vim.fn.fnamemodify(f, ':h'))
-  local lang   = file_lang(f)
-  local cc     = compiler(lang)
-  local std    = std_flag(lang)
-  local cfl    = extra_cflags()
-  local incs   = join(CPP.include_flags(root))
-  -- Scan just this one file for link flags (fast)
-  local lflags = join(scan_ldflags_files({ f }))
-  local binary = root .. '/' .. vim.fn.fnamemodify(f, ':t:r')
+  local f               = abs(file_abs)
+  local root            = abs(root_abs or vim.fn.fnamemodify(f, ':h'))
+  local lang            = file_lang(f)
+  local cc              = compiler(lang)
+  local std             = std_flag(lang)
+  local cfl             = extra_cflags()
+  local incs            = join(CPP.include_flags(root))
+  local lflags          = join(scan_ldflags_files({ f }))
+  local ok_pf, pf_lines = pcall(vim.fn.readfile, f)
+  local posix_flag      = (ok_pf and lines_need_posix(pf_lines)) and '-D_POSIX_C_SOURCE=200809L' or nil
+  local binary          = root .. '/' .. vim.fn.fnamemodify(f, ':t:r')
 
-  local cmd    = string.format('%s -std=%s %s %s %s -o %s',
-    cc, std, cfl, incs, esc(f), esc(binary))
+  local ok, local_libs  = pcall(require, 'marvin.local_libs')
+  if ok then
+    local lf = local_libs.build_flags(root)
+    if lf.lflags ~= '' then
+      lflags = lflags ~= '' and (lflags .. ' ' .. lf.lflags) or lf.lflags
+    end
+    if lf.iflags ~= '' then
+      incs = incs ~= '' and (incs .. ' ' .. lf.iflags) or lf.iflags
+    end
+  end
+
+  local cmd = string.format('%s -std=%s %s%s %s %s -o %s',
+    cc, std, cfl,
+    posix_flag and (' ' .. posix_flag) or '',
+    incs, esc(f), esc(binary))
   if lflags ~= '' then cmd = cmd .. ' ' .. lflags end
 
   return { cmd = cmd, binary = binary }
 end
 
--- ── Run command (unescaped binary path) ──────────────────────────────────────
--- Returns a plain shell string that runs the binary.
--- NOTE: do NOT shell-escape the return value again — it is already a
--- ready-to-run shell fragment.
+-- ── Run command ───────────────────────────────────────────────────────────────
 function CPP.run_cmd(p, run_args)
   local root      = abs(p.root)
   local lang      = CPP.project_lang(p)
@@ -419,14 +747,14 @@ function CPP.clean_cmd(p)
   return 'rm -rf ' .. esc(root .. '/.marvin-obj') .. ' ' .. esc(binary)
 end
 
--- ── Binary detection (for external callers) ──────────────────────────────────
+-- ── Binary detection ──────────────────────────────────────────────────────────
 function CPP.find_binary(p)
   local root = abs(p.root)
   local lang = CPP.project_lang(p)
   local main = CPP.find_main_file(root, lang)
   if main then return binary_path(root, main) end
   for _, name in ipairs({ vim.fn.fnamemodify(root, ':t'), 'main', 'app', 'demo', 'out' }) do
-    for _, prefix in ipairs({ '', 'build/', 'bin/' }) do
+    for _, prefix in ipairs({ '', 'build/', 'bin/', 'builddir/' }) do
       local candidate = root .. '/' .. prefix .. name
       if vim.fn.executable(candidate) == 1 then return candidate end
     end
@@ -434,39 +762,99 @@ function CPP.find_binary(p)
   return root .. '/' .. vim.fn.fnamemodify(root, ':t')
 end
 
--- ── compile_commands.json — native generation ─────────────────────────────────
+-- ── Meson binary detection ────────────────────────────────────────────────────
+local function meson_find_binary(p)
+  local root = abs(p.root)
+  local name = vim.fn.fnamemodify(root, ':t')
+  for _, candidate in ipairs({
+    root .. '/builddir/' .. name,
+    root .. '/build/' .. name,
+    root .. '/builddir/src/' .. name,
+  }) do
+    if vim.fn.executable(candidate) == 1 then return candidate end
+  end
+  return root .. '/builddir/' .. name
+end
+
+-- ── compile_commands.json ─────────────────────────────────────────────────────
 function CPP.generate_compile_commands(p)
-  local root     = abs(p.root)
-  local lang     = CPP.project_lang(p)
-  local inc_list = CPP.include_flags(root)
-  local sources  = CPP.all_sources(root, lang)
+  local root = abs(p.root)
+
+  -- For Meson projects: compile_commands.json is owned by Meson +
+  -- rewrite_compile_commands in cpp.lua. A hand-rolled file would be missing
+  -- all pkg-config-resolved include paths and immediately wrong.
+  -- Direct the user to Build → Setup instead.
+  if p.type == 'meson' then
+    vim.notify(
+      '[Marvin] Meson project detected.\n'
+      .. '  Use Build → Setup (meson setup builddir) to generate\n'
+      .. '  compile_commands.json with fully-resolved pkg-config paths.\n'
+      .. '  Marvin will rewrite it with absolute paths and restart clangd.',
+      vim.log.levels.INFO)
+    return false
+  end
+
+  local lang              = CPP.project_lang(p)
+  local inc_list          = CPP.include_flags(root)
+
+  local ok_ll, local_libs = pcall(require, 'marvin.local_libs')
+  if ok_ll then
+    local lf = local_libs.build_flags(root)
+    if lf.iflags ~= '' then
+      for _, f in ipairs(vim.split(lf.iflags, '%s+')) do
+        if f ~= '' then inc_list[#inc_list + 1] = f end
+      end
+    end
+  end
+
+  -- pkg-config: inject --cflags so clangd finds system library headers
+  local pkg = CPP.pkg_config_flags(root)
+  for _, f in ipairs(pkg.iflags) do inc_list[#inc_list + 1] = f end
+
+  local posix_flag = CPP.needs_posix_define(root) and '-D_POSIX_C_SOURCE=200809L' or nil
+  local sources    = CPP.all_sources(root, lang)
 
   if #sources == 0 then
     vim.notify('[Marvin] No C/C++ sources found in ' .. root, vim.log.levels.WARN)
     return false
   end
 
-  local function q(s) return '"' .. s:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
+  local function q(s)
+    return '"' .. s:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+  end
 
   local entries = {}
   for _, src in ipairs(sources) do
-    local slang = file_lang(src)
-    local cc    = compiler(slang)
-    local std   = std_flag(slang)
-    local cfl   = extra_cflags()
-    local obj   = obj_path(root, src)
-    local args  = { cc, '-std=' .. std }
+    local slang  = file_lang(src)
+    local cc_bin = compiler(slang)
+    local std    = std_flag(slang)
+    local cfl    = extra_cflags()
+    local obj    = obj_path(root, src)
+
+    -- "arguments" array form: each token is a separate element.
+    -- Preferred over "command" string — no shell parsing, no quoting ambiguity.
+    local args   = { cc_bin, '-std=' .. std }
+
     for _, f in ipairs(vim.split(cfl, '%s+')) do
       if f ~= '' then args[#args + 1] = f end
     end
-    for _, inc in ipairs(inc_list) do args[#args + 1] = inc end
+
+    if posix_flag then args[#args + 1] = posix_flag end
+
+    for _, inc in ipairs(inc_list) do
+      args[#args + 1] = inc
+    end
+
     args[#args + 1] = '-c'
     args[#args + 1] = src
     args[#args + 1] = '-o'
     args[#args + 1] = obj
+
     entries[#entries + 1] = string.format(
       '  {\n    "file": %s,\n    "directory": %s,\n    "arguments": [%s],\n    "output": %s\n  }',
-      q(src), q(root), table.concat(vim.tbl_map(q, args), ', '), q(obj))
+      q(src), q(root),
+      table.concat(vim.tbl_map(q, args), ', '),
+      q(obj))
   end
 
   local json = '[\n' .. table.concat(entries, ',\n') .. '\n]\n'
@@ -477,21 +865,36 @@ function CPP.generate_compile_commands(p)
     return false
   end
   f:write(json); f:close()
+
   vim.notify(string.format(
     '[Marvin] compile_commands.json written (%d files).\nRestart clangd: :LspRestart',
     #sources), vim.log.levels.INFO)
   return true
 end
 
--- ── Project info ─────────────────────────────────────────────────────────────
+-- ── Project info ──────────────────────────────────────────────────────────────
 function CPP.show_info(p)
-  local root      = abs(p.root)
-  local lang      = CPP.project_lang(p)
-  local mains     = CPP.find_main_files(root, lang)
-  local srcs      = CPP.all_sources(root, lang)
-  local incs      = CPP.include_flags(root)
-  local lf        = CPP.scan_ldflags(root)
-  local bin       = CPP.find_binary(p)
+  local root              = abs(p.root)
+  local lang              = CPP.project_lang(p)
+  local mains             = CPP.find_main_files(root, lang)
+  local srcs              = CPP.all_sources(root, lang)
+  local incs              = CPP.include_flags(root)
+  local lf                = CPP.scan_ldflags(root)
+  local bin               = CPP.find_binary(p)
+
+  local ll_lines          = {}
+  local ok_ll, local_libs = pcall(require, 'marvin.local_libs')
+  if ok_ll then
+    local sel = local_libs.selected_libs(root)
+    if #sel > 0 then
+      ll_lines[#ll_lines + 1] = '  Local libs (' .. #sel .. '):'
+      for _, lib in ipairs(sel) do
+        ll_lines[#ll_lines + 1] = '    -l' .. lib.name .. '  (' .. lib.path .. ')'
+      end
+    else
+      ll_lines[#ll_lines + 1] = '  Local libs:  (none selected)'
+    end
+  end
 
   local src_list  = #srcs > 0
       and table.concat(vim.tbl_map(function(f) return '    ' .. f end, srcs), '\n')
@@ -515,8 +918,10 @@ function CPP.show_info(p)
     '  Obj dir:   ' .. root .. '/.marvin-obj/',
     '  Entry point(s):',
     main_list,
-    '',
   }
+  for _, l in ipairs(ll_lines) do lines[#lines + 1] = l end
+  lines[#lines + 1] = ''
+
   vim.api.nvim_echo({ { table.concat(lines, '\n'), 'Normal' } }, true, {})
 end
 
@@ -524,7 +929,7 @@ end
 M.cpp = CPP
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- COMMAND TABLE — one entry per project type × action
+-- COMMAND TABLE
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local B = {
@@ -583,7 +988,18 @@ local B = {
     install = 'cmake --install build',
     package = 'cpack --config build/CPackConfig.cmake',
   },
-  -- Makefile: plugin owns build/run/clean; make is fallback for install etc.
+  meson = {
+    build       = 'meson compile -C builddir',
+    run         = function(p) return vim.fn.shellescape(meson_find_binary(p)) end,
+    test        = 'meson test -C builddir',
+    clean       = 'rm -rf builddir',
+    fmt         = 'clang-format -i $(find src include -name "*.cpp" -o -name "*.c" -o -name "*.h" 2>/dev/null)',
+    lint        = 'clang-tidy $(find src include -name "*.cpp" -o -name "*.c" 2>/dev/null)',
+    install     = 'meson install -C builddir',
+    package     = 'meson compile -C builddir && meson dist -C builddir',
+    setup       = 'meson setup builddir',
+    reconfigure = 'meson setup --reconfigure builddir',
+  },
   makefile = {
     build   = function(p) return CPP.build_cmd(p) end,
     run     = function(p) return CPP.run_cmd(p) end,
@@ -594,7 +1010,6 @@ local B = {
     install = 'make install',
     package = 'make dist',
   },
-  -- Single file: compile exactly the current buffer.
   single_file = {
     build   = function(p)
       local ft = p.language or p.lang
@@ -614,9 +1029,7 @@ local B = {
       local root = abs(p.root or vim.fn.fnamemodify(f, ':h'))
       local stem = vim.fn.fnamemodify(f, ':t:r')
       if ft == 'java' then return 'java ' .. stem end
-      if ft == 'c' or ft == 'cpp' then
-        return esc(root .. '/' .. stem)
-      end
+      if ft == 'c' or ft == 'cpp' then return esc(root .. '/' .. stem) end
       if ft == 'rust' then
         local dir = abs(vim.fn.fnamemodify(f, ':h'))
         return esc(dir .. '/' .. stem)
@@ -736,18 +1149,12 @@ function M.package()
 end
 
 -- ── Build & Run ───────────────────────────────────────────────────────────────
--- For C/C++ (makefile, single_file, cmake-with-binary): build and run are
--- concatenated into one atomic shell command so the terminal shows everything
--- in a single pane and the run step is skipped on build failure.
--- For other types: two sequential runner calls.
 function M.build_and_run(prompt_args)
   local p = proj(); if not p then return end
 
-  -- ── single file (any language) ───────────────────────────────────────────
   if p.type == 'single_file' then
     local ft = p.language or p.lang or vim.bo.filetype
     local f  = abs(p.file or vim.fn.expand('%:p'))
-    -- Refresh file/lang from current buffer if not set
     if not f or f == '' then f = abs(vim.fn.expand('%:p')) end
     p.file     = f
     p.language = ft
@@ -784,12 +1191,10 @@ function M.build_and_run(prompt_args)
     return
   end
 
-  -- ── C/C++ native pipeline (makefile / flat dir) ─────────────────────────
   if p.type == 'makefile' then
     local root    = abs(p.root)
     local lang    = CPP.project_lang(p)
     local sources = CPP.all_sources(root, lang)
-    -- If still empty after project_lang's best guess, try the other lang
     if #sources == 0 then
       local other = lang == 'c' and 'cpp' or 'c'
       sources     = CPP.all_sources(root, other)
@@ -801,7 +1206,6 @@ function M.build_and_run(prompt_args)
       return
     end
 
-    -- Single file shortcut: skip object staging entirely
     if #sources == 1 then
       local result = CPP.build_single_file_cmd(sources[1], abs(p.root))
       local function do_run(run_args)
@@ -823,7 +1227,6 @@ function M.build_and_run(prompt_args)
       return
     end
 
-    -- Multi-file: full object-staging pipeline
     local function do_run(run_args)
       local cmd = CPP.build_and_run_cmd(p, run_args)
       require('core.runner').execute(vim.tbl_extend('force',
@@ -842,7 +1245,6 @@ function M.build_and_run(prompt_args)
     return
   end
 
-  -- ── cmake: build then run binary (atomic) ───────────────────────────────
   if p.type == 'cmake' then
     local function do_run(run_args)
       local bc  = M.get_command('build', p)
@@ -864,10 +1266,30 @@ function M.build_and_run(prompt_args)
     return
   end
 
-  -- ── Other project types (Cargo, Go, Maven, Gradle) ──────────────────────
-  -- These tools handle "run" themselves, so just call their run command which
-  -- implicitly builds first (cargo run, go run, ./gradlew run, etc.).
-  -- Exception: maven needs explicit build+exec sequence.
+  if p.type == 'meson' then
+    local function do_run(run_args)
+      local bc      = M.get_command('build', p)
+      local run_cmd = vim.fn.shellescape(meson_find_binary(p))
+      if run_args and run_args ~= '' then
+        run_cmd = run_cmd .. ' ' .. run_args
+      end
+      local cmd = bc .. ' && \\\n  ' .. run_cmd
+      require('core.runner').execute(vim.tbl_extend('force',
+        base_opts(p, 'Build & Run', 'build_run', ''), { cmd = cmd }))
+    end
+    if prompt_args then
+      local saved = M.get_args(p.root, 'run')
+      vim.ui.input({ prompt = 'Run args: ', default = saved }, function(args)
+        if args == nil then return end
+        M.set_args(p.root, 'run', args)
+        do_run(args)
+      end)
+    else
+      do_run(M.get_args(p.root, 'run'))
+    end
+    return
+  end
+
   if p.type == 'maven' then
     local bc = M.get_command('build', p)
     local rc = M.get_command('run', p)
@@ -881,7 +1303,6 @@ function M.build_and_run(prompt_args)
     return
   end
 
-  -- For cargo, go_mod, gradle: their "run" command already compiles.
   run_action('run', 'Build & Run', 'build_run', p, prompt_args)
 end
 
@@ -891,7 +1312,7 @@ function M.custom(cmd, title)
     base_opts(p, title or cmd, cmd, ''), { cmd = cmd }))
 end
 
--- ── Build just the currently open C/C++ file ─────────────────────────────────
+-- ── Build current C/C++ file ──────────────────────────────────────────────────
 function M.build_current_file()
   local file = abs(vim.fn.expand('%:p'))
   local ft   = vim.bo.filetype
@@ -910,16 +1331,16 @@ function M.build_current_file()
   })
 end
 
--- ── Generate compile_commands.json natively ───────────────────────────────────
+-- ── Generate compile_commands.json ───────────────────────────────────────────
 function M.generate_compile_commands()
   local p = proj(); if not p then return end
   CPP.generate_compile_commands(p)
 end
 
--- ── Show C/C++ project diagnostics ───────────────────────────────────────────
+-- ── C/C++ project diagnostics ─────────────────────────────────────────────────
 function M.show_cpp_info()
   local p = proj(); if not p then return end
-  if p.type ~= 'makefile' and p.type ~= 'cmake' and p.type ~= 'single_file' then
+  if p.type ~= 'makefile' and p.type ~= 'cmake' and p.type ~= 'meson' and p.type ~= 'single_file' then
     vim.notify('[Marvin] Not a C/C++ project', vim.log.levels.WARN); return
   end
   CPP.show_info(p)
@@ -928,11 +1349,11 @@ end
 -- ── Backwards-compat shims ────────────────────────────────────────────────────
 function M.execute(cmd, cwd, title)
   require('core.runner').execute({
-    cmd = cmd,
-    cwd = abs(cwd),
-    title = title or cmd,
+    cmd      = cmd,
+    cwd      = abs(cwd),
+    title    = title or cmd,
     term_cfg = tcfg(),
-    plugin = 'jason',
+    plugin   = 'jason',
   })
 end
 
@@ -951,13 +1372,14 @@ function M.get_test_cmd_filtered(project, filter)
   if t == 'maven' then return 'mvn test -Dtest=' .. filter end
   if t == 'gradle' then return './gradlew test --tests ' .. filter end
   if t == 'makefile' or t == 'cmake' then return 'ctest -R ' .. filter end
+  if t == 'meson' then return 'meson test -C builddir --suite ' .. filter end
   return M.get_command('test', project)
 end
 
--- ── Java helpers ─────────────────────────────────────────────────────────────
+-- ── Java helpers ──────────────────────────────────────────────────────────────
 function M.find_main_class(project)
   local java_root = abs(project.root) .. '/src/main/java'
-  local files = vim.fn.glob(java_root .. '/**/*.java', false, true)
+  local files     = vim.fn.glob(java_root .. '/**/*.java', false, true)
   for _, file in ipairs(files) do
     local pkg, cls, has_main
     for _, line in ipairs(vim.fn.readfile(file)) do

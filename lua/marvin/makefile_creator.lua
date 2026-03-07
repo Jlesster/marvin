@@ -1,40 +1,291 @@
 -- lua/marvin/makefile_creator.lua
 -- Universal interactive Makefile wizard.
 -- Supports: C, C++, Go, Rust, and Generic projects.
--- For C/C++: integrates auto-link detection from marvin.creator.cpp.
--- Called from any language dashboard, :JasonNewMakefile, :MarvinNewMakefile.
+-- For C/C++: integrates auto-link detection from marvin.creator.cpp
+--            AND selected local libraries from marvin.local_libs.
+--            AND pkg-config auto-detection for system libraries that
+--            cannot be found via simple -l flags (wlroots, wayland,
+--            libinput, xkbcommon, cairo, pango, …).
 
 local M = {}
 
 local ui = function() return require('marvin.ui') end
 
+-- ── pkg-config header → package name map ──────────────────────────────────────
+-- Each entry: { pattern matched against #include path, pkg-config name }
+-- Order matters: more-specific patterns first.
+
+-- ── POSIX headers whose mere inclusion requires _POSIX_C_SOURCE ───────────────
+local _posix_hdr_set = {
+  ['unistd.h'] = true,
+  ['pthread.h'] = true,
+  ['sys/types.h'] = true,
+  ['sys/stat.h'] = true,
+  ['sys/wait.h'] = true,
+  ['sys/file.h'] = true,
+  ['sys/socket.h'] = true,
+  ['sys/mman.h'] = true,
+  ['dirent.h'] = true,
+  ['fcntl.h'] = true,
+  ['signal.h'] = true,
+  ['termios.h'] = true,
+  ['netinet/in.h'] = true,
+  ['arpa/inet.h'] = true,
+  ['netdb.h'] = true,
+  ['openssl/ssl.h'] = true,
+  ['curl/curl.h'] = true,
+  ['readline/readline.h'] = true,
+}
+
+local _posix_fn_set = {}
+for _, fn in ipairs({
+  'strtok_r', 'strndup', 'strdup', 'getline', 'getdelim', 'dprintf', 'asprintf', 'vasprintf',
+  'fdopen', 'fileno', 'popen', 'pclose', 'ftruncate', 'fchmod', 'fsync', 'fdatasync',
+  'openat', 'mkstemp', 'mkdtemp', 'fork', 'vfork', 'execvp', 'execve', 'execle', 'execl', 'execv',
+  'setsid', 'setpgid', 'waitpid', 'wait3', 'wait4', 'flock', 'lockf',
+  'opendir', 'readdir', 'closedir', 'scandir', 'nftw', 'symlink', 'readlink', 'realpath',
+  'dirname', 'basename', 'socket', 'bind', 'listen', 'accept', 'connect', 'send', 'recv',
+  'getaddrinfo', 'freeaddrinfo', 'getnameinfo', 'clock_gettime', 'nanosleep', 'timer_create',
+  'gethostname', 'sysconf', 'mmap', 'munmap', 'pipe', 'dup', 'dup2', 'dup3',
+  'usleep', 'truncate', 'chown', 'chmod', 'lstat', 'getcwd', 'chdir', 'unlink', 'rmdir',
+  'setenv', 'unsetenv', 'dlopen', 'dlsym', 'sem_open', 'sem_wait', 'sem_post', 'shm_open',
+  'pthread_create', 'pthread_join', 'pthread_mutex_lock',
+}) do _posix_fn_set[fn] = true end
+
+-- ── Scan source tree for POSIX usage ─────────────────────────────────────────
+local function project_needs_posix(root)
+  local patterns = { '*.c', '*.cpp', '*.h', '*.hpp', '*.cxx', '*.hxx' }
+  for _, pat in ipairs(patterns) do
+    local files = vim.fn.globpath(root, '**/' .. pat, false, true)
+    for _, f in ipairs(files) do
+      local ok, lines = pcall(vim.fn.readfile, f)
+      if ok then
+        for _, line in ipairs(lines) do
+          local hdr = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
+          if hdr and _posix_hdr_set[hdr] then return true end
+          for fn in line:gmatch('([%a_][%w_]*)%s*%(') do
+            if _posix_fn_set[fn] then return true end
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
+-- ── pkg-config detection ──────────────────────────────────────────────────────
+-- Scans all C/C++ source and header files for #include patterns that correspond
+-- to libraries best described via pkg-config. Returns a de-duplicated list of
+-- pkg-config package names that are actually installed on this system.
+-- ── Dynamic pkg-config dependency detection ──────────────────────────────────
+-- Builds a header→package reverse map from whatever is installed on this system.
+-- No hardcoded list needed — works for any library with a .pc file.
+
+local _hdr_pkg_map_cache = nil
+local function get_hdr_pkg_map()
+  if _hdr_pkg_map_cache then return _hdr_pkg_map_cache end
+  local map = {}
+
+  local h = io.popen('pkg-config --list-all 2>/dev/null')
+  if not h then
+    _hdr_pkg_map_cache = map; return map
+  end
+  local pkgs = {}
+  for line in h:lines() do
+    local name = line:match('^(%S+)')
+    if name then pkgs[#pkgs + 1] = name end
+  end
+  h:close()
+
+  local scanned = {}
+  for _, pkg in ipairs(pkgs) do
+    local dirs = {}
+    -- explicit -I flags
+    local ch = io.popen('pkg-config --cflags-only-I ' .. pkg .. ' 2>/dev/null')
+    if ch then
+      local out = ch:read('*a'); ch:close()
+      for token in out:gmatch('%S+') do
+        if token:sub(1, 2) == '-I' then dirs[#dirs + 1] = token:sub(3) end
+      end
+    end
+    -- includedir variable
+    local ih = io.popen('pkg-config --variable=includedir ' .. pkg .. ' 2>/dev/null')
+    if ih then
+      local d = vim.trim(ih:read('*l') or ''); ih:close()
+      if d ~= '' then dirs[#dirs + 1] = d end
+    end
+    -- guess <includedir>/<stem> for packages like harfbuzz in /usr/include/harfbuzz/
+    local stem = pkg:match('^([%a%d]+)')
+    if stem then
+      for _, base in ipairs({ '/usr/include', '/usr/local/include' }) do
+        if vim.fn.isdirectory(base .. '/' .. stem) == 1 then
+          dirs[#dirs + 1] = base
+          dirs[#dirs + 1] = base .. '/' .. stem
+        end
+      end
+    end
+    for _, dir in ipairs(dirs) do
+      if not scanned[dir] and vim.fn.isdirectory(dir) == 1 then
+        scanned[dir] = true
+        local fh = io.popen('ls ' .. vim.fn.shellescape(dir) .. ' 2>/dev/null')
+        if fh then
+          for entry in fh:lines() do
+            if entry:match('%.h$') then
+              if not map[entry] then map[entry] = pkg end
+            elseif vim.fn.isdirectory(dir .. '/' .. entry) == 1 then
+              local sh = io.popen('ls ' .. vim.fn.shellescape(dir .. '/' .. entry) .. ' 2>/dev/null')
+              if sh then
+                for hdr in sh:lines() do
+                  if hdr:match('%.h$') then
+                    local key = entry .. '/' .. hdr
+                    if not map[key] then map[key] = pkg end
+                  end
+                end
+                sh:close()
+              end
+            end
+          end
+          fh:close()
+        end
+      end
+    end
+  end
+  _hdr_pkg_map_cache = map
+  return map
+end
+
+local function include_to_pkg(inc)
+  local map = get_hdr_pkg_map()
+  if map[inc] then return map[inc] end
+  local fname = inc:match('([^/]+)$')
+  return fname and map[fname] or nil
+end
+
+
+-- Resolve a base pkg-config name to the actual installed name.
+-- Handles versioned packages: 'wlroots' → 'wlroots-0.18' etc.
+local _pkg_resolve_cache = {}
+local function resolve_pkg(base)
+  if _pkg_resolve_cache[base] ~= nil then return _pkg_resolve_cache[base] or nil end
+  -- 1. Exact name
+  if os.execute('pkg-config --exists ' .. base .. ' 2>/dev/null') == 0 then
+    _pkg_resolve_cache[base] = base; return base
+  end
+  -- 2. Versioned variant: e.g. wlroots-0.18
+  local h = io.popen(
+    "pkg-config --list-all 2>/dev/null | grep -E '^" .. base .. "[-[:space:]]' | head -1 | awk '{print $1}'")
+  if h then
+    local found = vim.trim(h:read('*l') or ''); h:close()
+    if found ~= '' then
+      _pkg_resolve_cache[base] = found; return found
+    end
+  end
+  _pkg_resolve_cache[base] = false; return nil
+end
+
+local function detect_pkg_deps(root)
+  local patterns = { '*.c', '*.cpp', '*.h', '*.hpp', '*.cxx', '*.hxx' }
+  local found    = {}
+  local ordered  = {}
+
+  for _, pat in ipairs(patterns) do
+    for _, f in ipairs(vim.fn.globpath(root, '**/' .. pat, false, true)) do
+      if not f:find('/build', 1, true) and not f:find('/builddir', 1, true) then
+        local ok, lines = pcall(vim.fn.readfile, f)
+        if ok then
+          for _, line in ipairs(lines) do
+            local inc = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
+            if inc then
+              local pkg = include_to_pkg(inc)
+              if pkg and not found[pkg] then
+                local resolved = resolve_pkg(pkg)
+                if resolved then
+                  found[pkg]            = true
+                  ordered[#ordered + 1] = resolved
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return ordered
+end
+-- ── wlroots unstable guard ────────────────────────────────────────────────────
+local function scan_needs_wlr_unstable(root)
+  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.cxx', '**/*.h', '**/*.hpp' }) do
+    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
+      if not f:find('/build', 1, true) and not f:find('/builddir', 1, true) then
+        local ok, lines = pcall(vim.fn.readfile, f)
+        if ok then
+          for _, line in ipairs(lines) do
+            if line:match('#%s*include%s*[<\"]wlr/') then return true end
+            if line:match('WLR_USE_UNSTABLE') then return true end
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
 -- ── Language detection helper ─────────────────────────────────────────────────
--- Infer the best Makefile language from the current project, or ask.
 local function infer_lang(root)
-  -- Check for Cargo.toml → Rust wrapper Makefile
   if vim.fn.filereadable(root .. '/Cargo.toml') == 1 then return 'rust' end
-  -- Check for go.mod → Go wrapper Makefile
   if vim.fn.filereadable(root .. '/go.mod') == 1 then return 'go' end
-  -- Heuristic: .cpp / .cxx / .cc files → C++; .c files → C
   local cpp_files = vim.fn.globpath(root, '**/*.cpp', false, true)
   local cxx_files = vim.fn.globpath(root, '**/*.cxx', false, true)
   local c_files   = vim.fn.globpath(root, '**/*.c', false, true)
   if #cpp_files > 0 or #cxx_files > 0 then return 'cpp' end
   if #c_files > 0 then return 'c' end
-  return nil -- unknown
+  return nil
 end
 
 -- ── Auto-link integration ─────────────────────────────────────────────────────
--- Returns LDFLAGS string detected from project includes, or '' if unavailable.
-local function auto_detect_ldflags(root)
-  local ok, cr = pcall(require, 'marvin.creator.cpp')
-  if not ok then return '' end
-  local ok2, det = pcall(require, 'marvin.detector')
-  if not ok2 then return '' end
-  local p = det.get()
-  if not p then return '' end
-  local links = cr.detect_links(p)
-  return (links and links.ldflags) or ''
+-- Returns { ldflags, iflags, pkg_deps, wlr_guard } merging:
+--   1. #include-scanned system libs (non-pkg-config, e.g. -lpthread)
+--   2. pkg-config packages detected from includes
+--   3. selected local libraries (.a/.so) from local_libs
+local function auto_detect_flags(root)
+  local ldflags     = ''
+  local iflags      = ''
+
+  -- 1. Simple -l flags from #include scanning (creator.cpp / build.lua engine)
+  local ok_cr, cr   = pcall(require, 'marvin.creator.cpp')
+  local ok_det, det = pcall(require, 'marvin.detector')
+  if ok_cr and ok_det then
+    local p = det.get()
+    if p then
+      local links = cr.detect_links(p)
+      if links then ldflags = links.ldflags or '' end
+    end
+  end
+
+  -- 2. Local .a/.so libraries
+  local ok_ll, ll = pcall(require, 'marvin.local_libs')
+  if ok_ll then
+    local lf = ll.build_flags(root)
+    if lf.lflags ~= '' then ldflags = vim.trim(ldflags .. ' ' .. lf.lflags) end
+    if lf.iflags ~= '' then iflags = vim.trim(iflags .. ' ' .. lf.iflags) end
+  end
+
+  -- 3. pkg-config packages — use build.cpp.pkg_config_flags which works correctly
+  local pkg_deps    = {}
+  local wlr_guard   = false
+  local ok_b, build = pcall(require, 'marvin.build')
+  if ok_b and build.cpp and build.cpp.pkg_config_flags then
+    local ok_f, flags = pcall(build.cpp.pkg_config_flags, root)
+    if ok_f then
+      pkg_deps = flags.pkg_names or {}
+      for _, f in ipairs(flags.iflags or {}) do
+        if f == '-DWLR_USE_UNSTABLE' then wlr_guard = true end
+      end
+    end
+  end
+  if not wlr_guard then wlr_guard = scan_needs_wlr_unstable(root) end
+
+  return { ldflags = ldflags, iflags = iflags, pkg_deps = pkg_deps, wlr_guard = wlr_guard }
 end
 
 -- ── Shared helpers ────────────────────────────────────────────────────────────
@@ -70,21 +321,32 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ── C template ────────────────────────────────────────────────────────────────
+
+
 local function c_template(opts)
-  local name       = opts.name
-  local cc         = opts.compiler or 'gcc'
-  local std        = opts.std or 'c11'
-  local src        = opts.src or 'src'
-  local inc        = opts.inc or 'include'
-  local out        = opts.out or name
-  local extra      = opts.cflags or ''
-  local lflags     = opts.ldflags or ''
-  local libs       = opts.libs or ''
+  local name         = opts.name
+  local cc           = opts.compiler or 'gcc'
+  local std          = opts.std or 'c11'
+  local src          = opts.src or 'src'
+  local inc          = opts.inc or 'include'
+  local out          = opts.out or name
+  local extra        = opts.cflags or ''
+  local lflags       = vim.trim((opts.ldflags or '') .. ' ' .. (opts.libs or ''))
+  local iflags       = opts.iflags or ''
+  local pkg_deps     = opts.pkg_deps or {}
+  local wlr_guard    = opts.wlr_guard or false
 
-  -- Combine auto-detected + user ldflags
-  local all_lflags = vim.trim(lflags .. ' ' .. libs)
+  local cflags_parts = { '-std=' .. std, '-Wall -Wextra -pedantic' }
+  if opts.needs_posix then cflags_parts[#cflags_parts + 1] = '-D_POSIX_C_SOURCE=200809L' end
+  if wlr_guard then cflags_parts[#cflags_parts + 1] = '-DWLR_USE_UNSTABLE' end
+  if extra ~= '' then cflags_parts[#cflags_parts + 1] = extra end
+  if iflags ~= '' then cflags_parts[#cflags_parts + 1] = iflags end
+  local cflags_str = table.concat(cflags_parts, ' ')
 
-  return table.concat({
+  local has_pkg = #pkg_deps > 0
+  local pkg_line = has_pkg and table.concat(pkg_deps, ' ') or ''
+
+  local lines = {
     '# ' .. name .. ' — generated by Marvin',
     '#',
     '# Usage:',
@@ -95,9 +357,34 @@ local function c_template(opts)
     '#   make dist     Copy binary to dist/',
     '',
     'CC      := ' .. cc,
-    'CFLAGS  := -std=' .. std .. ' -Wall -Wextra -pedantic'
-    .. (extra ~= '' and (' ' .. extra) or ''),
-    'LDFLAGS := ' .. (all_lflags ~= '' and all_lflags or ''),
+  }
+
+  if has_pkg then
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = '# ── pkg-config dependencies (' .. pkg_line .. ') ──'
+    lines[#lines + 1] = 'PKG_DEPS    := ' .. pkg_line
+    lines[#lines + 1] = 'PKG_CFLAGS  := $(shell pkg-config --cflags $(PKG_DEPS))'
+    lines[#lines + 1] = 'PKG_LIBS    := $(shell pkg-config --libs   $(PKG_DEPS))'
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = 'CFLAGS  := ' .. cflags_str .. ' $(PKG_CFLAGS)'
+        .. (opts.protocol_xmls and #opts.protocol_xmls > 0 and ' -Iinclude/protocols' or '')
+    lines[#lines + 1] = 'LDFLAGS := ' .. lflags .. ' $(PKG_LIBS)'
+  else
+    lines[#lines + 1] = 'CFLAGS  := ' .. cflags_str
+        .. (opts.protocol_xmls and #opts.protocol_xmls > 0 and ' -Iinclude/protocols' or '')
+    lines[#lines + 1] = 'LDFLAGS := ' .. lflags
+  end
+
+  local proto_deps = ''
+  if opts.protocol_xmls and #opts.protocol_xmls > 0 then
+    local ph = {}
+    for _, xml in ipairs(opts.protocol_xmls) do
+      ph[#ph + 1] = 'include/protocols/' .. xml:gsub('%.xml$', '') .. '-protocol.h'
+    end
+    proto_deps = ' ' .. table.concat(ph, ' ')
+  end
+
+  local rest = {
     '',
     'SRC_DIR := ' .. src,
     'INC_DIR := ' .. inc,
@@ -111,7 +398,7 @@ local function c_template(opts)
     '',
     '.PHONY: all clean test install dist',
     '',
-    'all: $(TARGET)',
+    'all:' .. proto_deps .. ' $(TARGET)',
     '',
     '$(TARGET): $(OBJS) | $(BIN_DIR)',
     '\t$(CC) $^ -o $@ $(LDFLAGS)',
@@ -140,25 +427,52 @@ local function c_template(opts)
     '\t@cp $(TARGET) dist/',
     '\t@echo "Distribution ready in dist/"',
     '',
-  }, '\n')
+  }
+  for _, l in ipairs(rest) do lines[#lines + 1] = l end
+
+  -- Wayland protocol generation rules (appended after rest)
+  if opts.protocol_xmls and #opts.protocol_xmls > 0 then
+    lines[#lines + 1] = '# ── Wayland protocol generation ─────────────────────────────────────────────'
+    for _, xml in ipairs(opts.protocol_xmls) do
+      local stem = xml:gsub('%.xml$', '')
+      local xml_path = 'include/protocols/' .. xml
+      local hdr_path = 'include/protocols/' .. stem .. '-protocol.h'
+      local src_path = 'include/protocols/' .. stem .. '-protocol.c'
+      lines[#lines + 1] = hdr_path .. ' ' .. src_path .. ': ' .. xml_path
+      lines[#lines + 1] = '\t@wayland-scanner client-header $< ' .. hdr_path
+      lines[#lines + 1] = '\t@wayland-scanner private-code  $< ' .. src_path
+      lines[#lines + 1] = '\t@echo "Generated: ' .. stem .. '-protocol.{h,c}"'
+      lines[#lines + 1] = ''
+    end
+    -- prepend protocol header deps to SRCS so objects rebuild when headers change
+    lines[#lines + 1] = '# Protocol headers are listed as explicit dependencies'
+    local proto_headers = {}
+    for _, xml in ipairs(opts.protocol_xmls) do
+      proto_headers[#proto_headers + 1] = 'include/protocols/' .. xml:gsub('%.xml$', '') .. '-protocol.h'
+    end
+    lines[#lines + 1] = 'PROTO_HEADERS := ' .. table.concat(proto_headers, ' ')
+    lines[#lines + 1] = '$(OBJS): $(PROTO_HEADERS)'
+    lines[#lines + 1] = ''
+  end
+
+  return table.concat(lines, '\n')
 end
 
 -- ── C++ template ──────────────────────────────────────────────────────────────
 local function cpp_template(opts)
-  local name       = opts.name
-  local cxx        = opts.compiler or 'g++'
-  local std        = opts.std or 'c++17'
-  local src        = opts.src or 'src'
-  local inc        = opts.inc or 'include'
-  local out        = opts.out or name
-  local extra      = opts.cflags or ''
-  local lflags     = opts.ldflags or ''
-  local libs       = opts.libs or ''
+  local name      = opts.name
+  local cxx       = opts.compiler or 'g++'
+  local std       = opts.std or 'c++17'
+  local src       = opts.src or 'src'
+  local inc       = opts.inc or 'include'
+  local out       = opts.out or name
+  local extra     = opts.cflags or ''
+  local lflags    = vim.trim((opts.ldflags or '') .. ' ' .. (opts.libs or ''))
+  local iflags    = opts.iflags or ''
+  local pkg_deps  = opts.pkg_deps or {}
+  local wlr_guard = opts.wlr_guard or false
 
-  local all_lflags = vim.trim(lflags .. ' ' .. libs)
-
-  -- Optional sanitizer support
-  local san_flags  = ''
+  local san_flags = ''
   if opts.sanitizer == 'asan' then
     san_flags = ' -fsanitize=address -fno-omit-frame-pointer'
   elseif opts.sanitizer == 'tsan' then
@@ -167,7 +481,17 @@ local function cpp_template(opts)
     san_flags = ' -fsanitize=undefined'
   end
 
-  -- compile_commands.json generation (via bear or intercept-build)
+  local cflags_parts = { '-std=' .. std, '-Wall -Wextra -pedantic' }
+  if opts.needs_posix then cflags_parts[#cflags_parts + 1] = '-D_POSIX_C_SOURCE=200809L' end
+  if wlr_guard then cflags_parts[#cflags_parts + 1] = '-DWLR_USE_UNSTABLE' end
+  if extra ~= '' then cflags_parts[#cflags_parts + 1] = extra end
+  if san_flags ~= '' then cflags_parts[#cflags_parts + 1] = vim.trim(san_flags) end
+  if iflags ~= '' then cflags_parts[#cflags_parts + 1] = iflags end
+  local cflags_str      = table.concat(cflags_parts, ' ')
+
+  local has_pkg         = #pkg_deps > 0
+  local pkg_line        = has_pkg and table.concat(pkg_deps, ' ') or ''
+
   local cc_json_section = opts.compile_commands and table.concat({
     '',
     'compile_commands:',
@@ -178,7 +502,7 @@ local function cpp_template(opts)
     '\tfi',
   }, '\n') or ''
 
-  return table.concat({
+  local lines           = {
     '# ' .. name .. ' — generated by Marvin',
     '#',
     '# Usage:',
@@ -187,13 +511,39 @@ local function cpp_template(opts)
     '#   make clean           Remove build artefacts',
     '#   make install         Install to /usr/local/bin',
     '#   make dist            Copy binary to dist/',
-    opts.compile_commands and '#   make compile_commands  Regenerate compile_commands.json (requires bear)' or '',
+    opts.compile_commands
+    and '#   make compile_commands  Regenerate compile_commands.json (requires bear)'
+    or '',
     '',
     'CXX      := ' .. cxx,
-    'CXXFLAGS := -std=' .. std .. ' -Wall -Wextra -pedantic'
-    .. (extra ~= '' and (' ' .. extra) or '')
-    .. san_flags,
-    'LDFLAGS  := ' .. (all_lflags ~= '' and all_lflags or ''),
+  }
+
+  if has_pkg then
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = '# ── pkg-config dependencies (' .. pkg_line .. ') ──'
+    lines[#lines + 1] = 'PKG_DEPS    := ' .. pkg_line
+    lines[#lines + 1] = 'PKG_CFLAGS  := $(shell pkg-config --cflags $(PKG_DEPS))'
+    lines[#lines + 1] = 'PKG_LIBS    := $(shell pkg-config --libs   $(PKG_DEPS))'
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = 'CXXFLAGS := ' .. cflags_str .. ' $(PKG_CFLAGS)'
+        .. (opts.protocol_xmls and #opts.protocol_xmls > 0 and ' -Iinclude/protocols' or '')
+    lines[#lines + 1] = 'LDFLAGS  := ' .. lflags .. ' $(PKG_LIBS)'
+  else
+    lines[#lines + 1] = 'CXXFLAGS := ' .. cflags_str
+        .. (opts.protocol_xmls and #opts.protocol_xmls > 0 and ' -Iinclude/protocols' or '')
+    lines[#lines + 1] = 'LDFLAGS  := ' .. lflags
+  end
+
+  local proto_deps = ''
+  if opts.protocol_xmls and #opts.protocol_xmls > 0 then
+    local ph = {}
+    for _, xml in ipairs(opts.protocol_xmls) do
+      ph[#ph + 1] = 'include/protocols/' .. xml:gsub('%.xml$', '') .. '-protocol.h'
+    end
+    proto_deps = ' ' .. table.concat(ph, ' ')
+  end
+
+  local rest = {
     '',
     'SRC_DIR  := ' .. src,
     'INC_DIR  := ' .. inc,
@@ -207,7 +557,7 @@ local function cpp_template(opts)
     '',
     '.PHONY: all clean test install dist' .. (opts.compile_commands and ' compile_commands' or ''),
     '',
-    'all: $(TARGET)',
+    'all:' .. proto_deps .. ' $(TARGET)',
     '',
     '$(TARGET): $(OBJS) | $(BIN_DIR)',
     '\t$(CXX) $^ -o $@ $(LDFLAGS)',
@@ -237,7 +587,35 @@ local function cpp_template(opts)
     '\t@echo "Distribution ready in dist/"',
     cc_json_section,
     '',
-  }, '\n')
+  }
+  for _, l in ipairs(rest) do lines[#lines + 1] = l end
+
+  -- Wayland protocol generation rules (appended after rest)
+  if opts.protocol_xmls and #opts.protocol_xmls > 0 then
+    lines[#lines + 1] = '# ── Wayland protocol generation ─────────────────────────────────────────────'
+    for _, xml in ipairs(opts.protocol_xmls) do
+      local stem = xml:gsub('%.xml$', '')
+      local xml_path = 'include/protocols/' .. xml
+      local hdr_path = 'include/protocols/' .. stem .. '-protocol.h'
+      local src_path = 'include/protocols/' .. stem .. '-protocol.c'
+      lines[#lines + 1] = hdr_path .. ' ' .. src_path .. ': ' .. xml_path
+      lines[#lines + 1] = '\t@wayland-scanner client-header $< ' .. hdr_path
+      lines[#lines + 1] = '\t@wayland-scanner private-code  $< ' .. src_path
+      lines[#lines + 1] = '\t@echo "Generated: ' .. stem .. '-protocol.{h,c}"'
+      lines[#lines + 1] = ''
+    end
+    -- prepend protocol header deps to SRCS so objects rebuild when headers change
+    lines[#lines + 1] = '# Protocol headers are listed as explicit dependencies'
+    local proto_headers = {}
+    for _, xml in ipairs(opts.protocol_xmls) do
+      proto_headers[#proto_headers + 1] = 'include/protocols/' .. xml:gsub('%.xml$', '') .. '-protocol.h'
+    end
+    lines[#lines + 1] = 'PROTO_HEADERS := ' .. table.concat(proto_headers, ' ')
+    lines[#lines + 1] = '$(OBJS): $(PROTO_HEADERS)'
+    lines[#lines + 1] = ''
+  end
+
+  return table.concat(lines, '\n')
 end
 
 -- ── Go wrapper Makefile ───────────────────────────────────────────────────────
@@ -247,7 +625,6 @@ local function go_template(opts)
   local out    = opts.out or name
   local gofmt  = opts.formatter or 'gofmt'
   local linter = opts.linter or 'golangci-lint'
-
   return table.concat({
     '# ' .. name .. ' — generated by Marvin (Go)',
     '#',
@@ -310,10 +687,8 @@ local function rust_template(opts)
   local name    = opts.name
   local profile = opts.profile or 'dev'
   local out     = opts.out or name
-
   local pflag   = profile == 'release' and '--release' or ''
   local pdir    = profile == 'release' and 'release' or 'debug'
-
   return table.concat({
     '# ' .. name .. ' — generated by Marvin (Rust/Cargo)',
     '#',
@@ -403,16 +778,19 @@ end
 -- WIZARD STEPS
 -- ══════════════════════════════════════════════════════════════════════════════
 
--- ── Step: extra CFLAGS ────────────────────────────────────────────────────────
-local function step_cflags(opts, root, lang, ldflags_hint)
+local function step_cflags(opts, root, lang, flags)
   local default = opts.debug and '-g -O0' or '-O2'
   ui().input({
     prompt  = 'Extra compiler flags (optional)',
     default = default,
-  }, function(flags)
-    opts.cflags = (flags and flags ~= '' and flags or nil)
+  }, function(extra)
+    opts.cflags      = (extra and extra ~= '') and extra or nil
+    opts.ldflags     = flags.ldflags
+    opts.iflags      = flags.iflags
+    opts.needs_posix = flags.needs_posix
+    opts.pkg_deps    = flags.pkg_deps
+    opts.wlr_guard   = flags.wlr_guard
 
-    -- Ask about sanitizers for C/C++
     if lang == 'cpp' then
       ui().select({
           { id = 'none',  label = 'None',             desc = 'No sanitizer' },
@@ -422,30 +800,22 @@ local function step_cflags(opts, root, lang, ldflags_hint)
         }, { prompt = 'Sanitizer (optional)', format_item = function(it) return it.label end },
         function(san)
           opts.sanitizer = (san and san.id ~= 'none') and san.id or nil
-
-          -- Ask about compile_commands.json
           ui().select({
               { id = 'yes', label = 'Yes — add compile_commands target', desc = 'requires bear' },
               { id = 'no', label = 'No' },
             }, { prompt = 'Add compile_commands.json target?', format_item = function(it) return it.label end },
             function(cc)
               opts.compile_commands = cc and cc.id == 'yes'
-              -- Inject auto-detected LDFLAGS
-              opts.ldflags = ldflags_hint
-              local content = cpp_template(opts)
-              check_existing(root .. '/Makefile', content, opts, root)
+              check_existing(root .. '/Makefile', cpp_template(opts), opts, root)
             end)
         end)
     else
-      opts.ldflags = ldflags_hint
-      local content = c_template(opts)
-      check_existing(root .. '/Makefile', content, opts, root)
+      check_existing(root .. '/Makefile', c_template(opts), opts, root)
     end
   end)
 end
 
--- ── Step: C standard ─────────────────────────────────────────────────────────
-local function step_c_std(opts, root)
+local function step_c_std(opts, root, flags)
   ui().select({
       { id = 'c11', label = 'C11', desc = 'Recommended modern standard' },
       { id = 'c17', label = 'C17', desc = 'Latest stable' },
@@ -455,14 +825,13 @@ local function step_c_std(opts, root)
     function(choice)
       if not choice then return end
       opts.std = choice.id
-      step_cflags(opts, root, 'c', '')
+      step_cflags(opts, root, 'c', flags)
     end)
 end
 
--- ── Step: C++ standard ───────────────────────────────────────────────────────
-local function step_cpp_std(opts, root, ldflags_hint)
+local function step_cpp_std(opts, root, flags)
   ui().select({
-      { id = 'c++17', label = 'C++17', desc = 'Recommended — structured bindings, if constexpr' },
+      { id = 'c++17', label = 'C++17', desc = 'Recommended' },
       { id = 'c++20', label = 'C++20', desc = 'Concepts, ranges, coroutines' },
       { id = 'c++23', label = 'C++23', desc = 'Latest (compiler support varies)' },
       { id = 'c++14', label = 'C++14', desc = 'Lambdas, auto' },
@@ -471,12 +840,11 @@ local function step_cpp_std(opts, root, ldflags_hint)
     function(choice)
       if not choice then return end
       opts.std = choice.id
-      step_cflags(opts, root, 'cpp', ldflags_hint)
+      step_cflags(opts, root, 'cpp', flags)
     end)
 end
 
--- ── Step: compiler ────────────────────────────────────────────────────────────
-local function step_compiler(opts, root, lang, ldflags_hint)
+local function step_compiler(opts, root, lang, flags)
   local compilers = lang == 'c'
       and {
         { id = 'gcc',   label = 'gcc',   desc = 'GNU C Compiler (recommended)' },
@@ -494,15 +862,14 @@ local function step_compiler(opts, root, lang, ldflags_hint)
       if not choice then return end
       opts.compiler = choice.id
       if lang == 'c' then
-        step_c_std(opts, root)
+        step_c_std(opts, root, flags)
       else
-        step_cpp_std(opts, root, ldflags_hint)
+        step_cpp_std(opts, root, flags)
       end
     end)
 end
 
--- ── Step: project name + binary ───────────────────────────────────────────────
-local function step_name_binary(lang, root, on_back)
+local function step_name_binary(lang, root, src, inc, on_back)
   local default = vim.fn.fnamemodify(root, ':t')
 
   ui().input({ prompt = '󰬷 Project Name', default = default }, function(name)
@@ -511,12 +878,11 @@ local function step_name_binary(lang, root, on_back)
     ui().input({ prompt = '󰐊 Output Binary Name', default = name }, function(out)
       if not out or out == '' then out = name end
 
-      local opts = { name = name, out = out }
+      local opts = { name = name, out = out, src = src, inc = inc }
 
       if lang == 'generic' then
         check_existing(root .. '/Makefile', generic_template(opts), opts, root)
       elseif lang == 'go' then
-        -- Ask module path
         local mod_default = 'github.com/yourname/' .. name
         local go_mod = root .. '/go.mod'
         if vim.fn.filereadable(go_mod) == 1 then
@@ -539,7 +905,6 @@ local function step_name_binary(lang, root, on_back)
             end)
         end)
       elseif lang == 'rust' then
-        -- Read binary name from Cargo.toml if possible
         local cargo_toml = root .. '/Cargo.toml'
         if vim.fn.filereadable(cargo_toml) == 1 then
           for _, line in ipairs(vim.fn.readfile(cargo_toml)) do
@@ -558,35 +923,68 @@ local function step_name_binary(lang, root, on_back)
             check_existing(root .. '/Makefile', rust_template(opts), opts, root)
           end)
       else
-        -- C or C++: run auto-link detection first
-        local ldflags_hint = ''
-        if lang == 'cpp' or lang == 'c' then
-          ldflags_hint = auto_detect_ldflags(root)
-          if ldflags_hint ~= '' then
-            vim.notify(
-              '[Marvin] Auto-detected LDFLAGS: ' .. ldflags_hint
-              .. '\nThese will be pre-filled in the Makefile.',
-              vim.log.levels.INFO)
+        -- C / C++: run full detection pipeline silently
+        local flags = auto_detect_flags(root)
+        flags.needs_posix = project_needs_posix(root)
+
+        -- Build notification of what was injected
+        local notice = {}
+        if #(flags.pkg_deps or {}) > 0 then
+          notice[#notice + 1] = 'PKG_DEPS:  ' .. table.concat(flags.pkg_deps, ' ')
+          notice[#notice + 1] = '  → PKG_CFLAGS / PKG_LIBS via pkg-config'
+        end
+        if flags.wlr_guard then
+          notice[#notice + 1] = 'CFLAGS:    -DWLR_USE_UNSTABLE (wlroots headers detected)'
+        end
+        if flags.ldflags ~= '' then
+          notice[#notice + 1] = 'LDFLAGS:   ' .. flags.ldflags
+        end
+        if flags.iflags ~= '' then
+          notice[#notice + 1] = 'CFLAGS:    ' .. flags.iflags
+        end
+        if flags.needs_posix then
+          notice[#notice + 1] = 'CFLAGS:    -D_POSIX_C_SOURCE=200809L (POSIX usage detected)'
+        end
+        if #notice > 0 then
+          vim.notify(
+            '[Marvin] Auto-injecting flags:\n  ' .. table.concat(notice, '\n  '),
+            vim.log.levels.INFO)
+        end
+
+        local ok_wp, wl_proto = pcall(require, 'marvin.wayland_protocols')
+        if not ok_wp then
+          vim.notify('[Marvin] wayland_protocols module error: ' .. tostring(wl_proto), vim.log.levels.WARN)
+          wl_proto = nil
+        end
+        local protocol_xmls = {}
+        if wl_proto then
+          local ok_r, proto_entries = pcall(wl_proto.resolve, root)
+          if ok_r then
+            for _, e in ipairs(proto_entries) do
+              if e.in_root then
+                protocol_xmls[#protocol_xmls + 1] = e.xml
+              end
+            end
+          else
+            vim.notify('[Marvin] Protocol scan error: ' .. tostring(proto_entries), vim.log.levels.WARN)
           end
         end
-        step_compiler(opts, root, lang, ldflags_hint)
+        opts.protocol_xmls = protocol_xmls
+
+        step_compiler(opts, root, lang, flags)
       end
     end)
   end)
 end
 
--- ── Source/include dir detection ──────────────────────────────────────────────
 local function step_dirs(lang, root, on_back)
-  -- Suggest dirs based on what exists
-  local has_src = vim.fn.isdirectory(root .. '/src') == 1
-  local has_inc = vim.fn.isdirectory(root .. '/include') == 1
-
   if lang ~= 'c' and lang ~= 'cpp' then
-    -- Go/Rust/generic don't need this
-    step_name_binary(lang, root, on_back)
+    step_name_binary(lang, root, nil, nil, on_back)
     return
   end
 
+  local has_src = vim.fn.isdirectory(root .. '/src') == 1
+  local has_inc = vim.fn.isdirectory(root .. '/include') == 1
   local src_default = has_src and 'src' or '.'
   local inc_default = has_inc and 'include' or (has_src and 'src' or '.')
 
@@ -594,26 +992,7 @@ local function step_dirs(lang, root, on_back)
     src = (src and src ~= '') and src or src_default
     ui().input({ prompt = 'Include directory', default = inc_default }, function(inc)
       inc = (inc and inc ~= '') and inc or inc_default
-      -- Stash so step_name_binary can pick them up
-      -- We pass them via a small upvalue trick: redefine step_name_binary for this call
-      local orig = step_name_binary
-      step_name_binary = function(lg, rt, ob)
-        step_name_binary = orig -- restore
-        local default = vim.fn.fnamemodify(rt, ':t')
-        ui().input({ prompt = '󰬷 Project Name', default = default }, function(name)
-          if not name or name == '' then return end
-          ui().input({ prompt = '󰐊 Output Binary Name', default = name }, function(out)
-            if not out or out == '' then out = name end
-            local opts = { name = name, out = out, src = src, inc = inc }
-            local ldflags_hint = auto_detect_ldflags(rt)
-            if ldflags_hint ~= '' then
-              vim.notify('[Marvin] Auto-detected LDFLAGS: ' .. ldflags_hint, vim.log.levels.INFO)
-            end
-            step_compiler(opts, rt, lg, ldflags_hint)
-          end)
-        end)
-      end
-      step_name_binary(lang, root, on_back)
+      step_name_binary(lang, root, src, inc, on_back)
     end)
   end)
 end
@@ -622,22 +1001,18 @@ end
 -- ENTRY POINT
 -- ══════════════════════════════════════════════════════════════════════════════
 
--- Public entry point. root = project root dir, on_back = optional callback.
 function M.create(root, on_back)
   root = root or vim.fn.getcwd()
-
-  -- Try to pre-select language from project
   local detected_lang = infer_lang(root)
 
   local lang_items = {
     { id = 'cpp', label = '󰙲 C++', desc = 'g++/clang++, wildcard *.cpp sources, auto-link detection' },
-    { id = 'c', label = '󰙱 C', desc = 'gcc/clang, wildcard *.c sources, auto-link detection' },
+    { id = 'c', label = '󰙱 C', desc = 'gcc/clang, wildcard *.c sources, auto-link + pkg-config detection' },
     { id = 'go', label = '󰟓 Go', desc = 'go build wrapper with test, lint, fmt, cover targets' },
     { id = 'rust', label = '󱘗 Rust', desc = 'cargo wrapper with clippy, fmt, doc, bench targets' },
     { id = 'generic', label = '󰈙 Generic', desc = 'Minimal skeleton: all, build, test, clean, install, dist' },
   }
 
-  -- Move detected language to the top as a suggestion
   local prompt = 'Makefile Type'
   if detected_lang then
     prompt = 'Makefile Type  (detected: ' .. detected_lang .. ')'
