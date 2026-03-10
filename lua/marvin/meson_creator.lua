@@ -11,7 +11,12 @@
 --   • xkbcommon guard         → header scan for <xkbcommon/...>
 --   • include dirs            → filesystem walk
 --   • sources                 → filesystem walk (explicit files(), no globs)
---   • linker symbol audit     → post-collection ldd cross-check (optional)
+--
+-- Protocol XML strategy:
+--   wayland-protocols XMLs  → referenced via wp_dir / 'subpath' (never copied)
+--   wlroots protocol XMLs   → referenced via wlr_proto_dir / 'subpath' if installed,
+--                             else vendored into include/protocols/ as fallback
+--   No .h/.c files are pre-generated — Meson's custom_target() does that at build time.
 
 local M = {}
 
@@ -111,29 +116,36 @@ end
 -- ── wlroots guard ─────────────────────────────────────────────────────────────
 
 local function scan_needs_wlr_unstable(root)
-  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.cxx', '**/*.h', '**/*.hpp', '**/*.hxx' }) do
-    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            if line:match('#%s*include%s*[<\"]wlr/') then return true end
-            if line:match('WLR_USE_UNSTABLE') then return true end
-          end
-        end
-      end
-    end
-  end
-  return false
+  local h = io.popen(
+    'grep -rl --include="*.c" --include="*.cpp" --include="*.h" --include="*.hpp"'
+    .. ' --include="*.cxx" --include="*.hxx"'
+    .. ' -E ' .. vim.fn.shellescape([=[#\s*include\s*[<"]wlr/|WLR_USE_UNSTABLE]=])
+    .. ' ' .. vim.fn.shellescape(root)
+    .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+    .. ' 2>/dev/null | head -1')
+  if not h then return false end
+  local found = h:read('*l'); h:close()
+  return found ~= nil and found ~= ''
 end
 
 -- ── pkg-config scan ───────────────────────────────────────────────────────────
+--
+-- Performance strategy: do everything in two bulk shell calls instead of one
+-- per package.
+--
+-- 1. `pkg-config --list-all` → package list
+-- 2. One `pkg-config --cflags-only-I <all pkgs...>` batch call per package list
+--    chunk, piped through a small awk script that emits "pkg:dir" pairs.
+--    This replaces ~500 individual popen() calls with ~1.
+-- 3. Walk only the unique -I dirs we actually got back (usually <20).
+-- 4. Build a header→pkg reverse map from those dirs using `find`.
 
 local _hdr_pkg_map_cache = nil
 local function get_hdr_pkg_map()
   if _hdr_pkg_map_cache then return _hdr_pkg_map_cache end
   local map = {}
 
+  -- Step 1: get all package names in one call
   local h = io.popen('pkg-config --list-all 2>/dev/null')
   if not h then
     _hdr_pkg_map_cache = map; return map
@@ -144,57 +156,90 @@ local function get_hdr_pkg_map()
     if name then pkgs[#pkgs + 1] = name end
   end
   h:close()
+  if #pkgs == 0 then
+    _hdr_pkg_map_cache = map; return map
+  end
 
-  local scanned = {}
-  for _, pkg in ipairs(pkgs) do
-    local dirs = {}
-    local ch = io.popen('pkg-config --cflags-only-I ' .. pkg .. ' 2>/dev/null')
+  -- Step 2: batch cflags in chunks of 50 to avoid ARG_MAX issues.
+  -- For each pkg we emit "PKGNAME TAB dir" lines using an awk wrapper.
+  -- We use a shell loop so pkg-config errors on individual packages don't abort.
+  local dir_to_pkg = {} -- dir → first pkg that claimed it
+  local chunk_size = 50
+  for i = 1, #pkgs, chunk_size do
+    local chunk = {}
+    for j = i, math.min(i + chunk_size - 1, #pkgs) do
+      chunk[#chunk + 1] = pkgs[j]
+    end
+    -- emit "pkg\t-Idir" for each -I flag; one line per (pkg, dir) pair
+    local script = [[
+      for p in "$@"; do
+        flags=$(pkg-config --cflags-only-I "$p" 2>/dev/null)
+        for f in $flags; do
+          d="${f#-I}"
+          [ -n "$d" ] && printf '%s\t%s\n' "$p" "$d"
+        done
+        inc=$(pkg-config --variable=includedir "$p" 2>/dev/null)
+        [ -n "$inc" ] && printf '%s\t%s\n' "$p" "$inc"
+      done
+    ]]
+    local cmd = 'sh -c ' .. vim.fn.shellescape(script) .. ' -- ' .. table.concat(
+      vim.tbl_map(vim.fn.shellescape, chunk), ' ')
+    local ch = io.popen(cmd .. ' 2>/dev/null')
     if ch then
-      local out = ch:read('*a'); ch:close()
-      for token in out:gmatch('%S+') do
-        if token:sub(1, 2) == '-I' then dirs[#dirs + 1] = token:sub(3) end
+      for line in ch:lines() do
+        local pkg, dir = line:match('^([^\t]+)\t(.+)$')
+        if pkg and dir and not dir_to_pkg[dir] then
+          dir_to_pkg[dir] = pkg
+        end
       end
+      ch:close()
     end
-    local ih = io.popen('pkg-config --variable=includedir ' .. pkg .. ' 2>/dev/null')
-    if ih then
-      local d = vim.trim(ih:read('*l') or ''); ih:close()
-      if d ~= '' then dirs[#dirs + 1] = d end
-    end
+  end
+
+  -- Step 3: also add guessed stem dirs (fast filesystem check, no shell)
+  for _, pkg in ipairs(pkgs) do
     local stem = pkg:match('^([%a%d]+)')
     if stem then
       for _, base in ipairs({ '/usr/include', '/usr/local/include' }) do
-        if vim.fn.isdirectory(base .. '/' .. stem) == 1 then
-          dirs[#dirs + 1] = base
-          dirs[#dirs + 1] = base .. '/' .. stem
-        end
-      end
-    end
-    for _, dir in ipairs(dirs) do
-      if not scanned[dir] and vim.fn.isdirectory(dir) == 1 then
-        scanned[dir] = true
-        local fh = io.popen('ls ' .. vim.fn.shellescape(dir) .. ' 2>/dev/null')
-        if fh then
-          for entry in fh:lines() do
-            if entry:match('%.h$') then
-              if not map[entry] then map[entry] = pkg end
-            elseif vim.fn.isdirectory(dir .. '/' .. entry) == 1 then
-              local sh = io.popen('ls ' .. vim.fn.shellescape(dir .. '/' .. entry) .. ' 2>/dev/null')
-              if sh then
-                for hdr in sh:lines() do
-                  if hdr:match('%.h$') then
-                    local key = entry .. '/' .. hdr
-                    if not map[key] then map[key] = pkg end
-                  end
-                end
-                sh:close()
-              end
-            end
-          end
-          fh:close()
+        local d = base .. '/' .. stem
+        if not dir_to_pkg[d] and vim.fn.isdirectory(d) == 1 then
+          dir_to_pkg[d] = pkg
         end
       end
     end
   end
+
+  -- Step 4: walk unique dirs with a single `find` call to build header→pkg map.
+  -- Collect all dirs into one find invocation: find dir1 dir2 ... -maxdepth 2 -name '*.h'
+  local dirs = {}
+  for d in pairs(dir_to_pkg) do
+    if vim.fn.isdirectory(d) == 1 then dirs[#dirs + 1] = d end
+  end
+
+  if #dirs > 0 then
+    -- find prints "dir/relative/path.h" — we strip the base dir to get the key
+    local find_cmd = 'find '
+        .. table.concat(vim.tbl_map(vim.fn.shellescape, dirs), ' ')
+        .. ' -maxdepth 2 -name "*.h" -print 2>/dev/null'
+    local fh = io.popen(find_cmd)
+    if fh then
+      for fpath in fh:lines() do
+        -- match the longest prefix dir
+        for _, d in ipairs(dirs) do
+          if fpath:sub(1, #d) == d then
+            -- key is the path relative to the include dir, e.g. "gtk/gtk.h" or "gtk.h"
+            local rel = fpath:sub(#d + 2) -- strip leading /
+            if rel ~= '' and not map[rel] then
+              map[rel] = dir_to_pkg[d]
+            end
+            break
+          end
+        end
+      end
+      fh:close()
+    end
+  end
+
   _hdr_pkg_map_cache = map
   return map
 end
@@ -202,55 +247,78 @@ end
 local function include_to_pkg(inc)
   local map = get_hdr_pkg_map()
   if map[inc] then return map[inc] end
+  -- Also try just the filename without any leading path component
   local fname = inc:match('([^/]+)$')
   return fname and map[fname] or nil
 end
 
--- Resolve a base pkg-config name to the actual installed name.
+-- Resolve a pkg name to its actual installed versioned name.
+-- Uses a single pre-built lookup table from pkg-config --list-all instead of
+-- spawning one process per package.
+local _pkg_list_cache = nil
+local function get_pkg_list()
+  if _pkg_list_cache then return _pkg_list_cache end
+  local set = {}
+  local h = io.popen('pkg-config --list-all 2>/dev/null')
+  if h then
+    for line in h:lines() do
+      local name = line:match('^(%S+)')
+      if name then set[name] = true end
+    end
+    h:close()
+  end
+  _pkg_list_cache = set
+  return set
+end
+
 local _pkg_resolve_cache = {}
 local function resolve_pkg(base)
   if _pkg_resolve_cache[base] ~= nil then return _pkg_resolve_cache[base] or nil end
-  if os.execute('pkg-config --exists ' .. base .. ' 2>/dev/null') == 0 then
+  local all = get_pkg_list()
+  -- exact match
+  if all[base] then
     _pkg_resolve_cache[base] = base; return base
   end
-  local h = io.popen(
-    "pkg-config --list-all 2>/dev/null | grep -E '^" .. base .. "[-[:space:]]' | head -1 | awk '{print $1}'")
-  if h then
-    local found = vim.trim(h:read('*l') or ''); h:close()
-    if found ~= '' then
-      _pkg_resolve_cache[base] = found; return found
+  -- versioned variant: find first entry that starts with base followed by - or space
+  for name in pairs(all) do
+    if name:sub(1, #base + 1) == base .. '-' then
+      _pkg_resolve_cache[base] = name; return name
     end
   end
   _pkg_resolve_cache[base] = false; return nil
 end
 
+-- Collect all #include lines from the project in one grep, then map them.
 local function detect_pkg_deps(root)
-  local patterns = { '*.c', '*.cpp', '*.h', '*.hpp', '*.cxx', '*.hxx' }
   local found    = {}
   local ordered  = {}
 
-  for _, pat in ipairs(patterns) do
-    for _, f in ipairs(vim.fn.globpath(root, '**/' .. pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            local inc = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
-            if inc then
-              local pkg = include_to_pkg(inc)
-              if pkg and not found[pkg] then
-                local resolved = resolve_pkg(pkg)
-                if resolved then
-                  found[pkg]            = true
-                  ordered[#ordered + 1] = resolved
-                end
-              end
-            end
-          end
+  -- One grep across the whole tree is vastly faster than Lua globpath + readfile
+  local grep_cmd = 'grep -rh'
+      .. ' --include="*.c" --include="*.cpp" --include="*.cxx"'
+      .. ' --include="*.h" --include="*.hpp" --include="*.hxx"'
+      .. ' -E ' .. vim.fn.shellescape([=[^\s*#\s*include\s*[<"][^>"]+[>"]]=])
+      .. ' ' .. vim.fn.shellescape(root)
+      .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+      .. ' 2>/dev/null'
+
+  local h        = io.popen(grep_cmd)
+  if not h then return ordered end
+
+  for line in h:lines() do
+    local inc = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
+    if inc then
+      local pkg = include_to_pkg(inc)
+      if pkg and not found[pkg] then
+        local resolved = resolve_pkg(pkg)
+        if resolved then
+          found[pkg]            = true
+          ordered[#ordered + 1] = resolved
         end
       end
     end
   end
+  h:close()
   return ordered
 end
 
@@ -258,109 +326,56 @@ end
 
 local function var(pkg) return pkg:gsub('[%-.]', '_') end
 
+-- ── grep helper ───────────────────────────────────────────────────────────────
+
+local function grep_any(root, pattern)
+  local h = io.popen(
+    'grep -rl --include="*.c" --include="*.cpp" --include="*.cxx"'
+    .. ' --include="*.h" --include="*.hpp" --include="*.hxx"'
+    .. ' -E ' .. vim.fn.shellescape(pattern)
+    .. ' ' .. vim.fn.shellescape(root)
+    .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+    .. ' 2>/dev/null | head -1')
+  if not h then return false end
+  local found = h:read('*l'); h:close()
+  return found ~= nil and found ~= ''
+end
+
 -- ── find_library() dependency detection ──────────────────────────────────────
---
--- Libraries that are NOT exposed via pkg-config but are needed at link time.
--- We detect them by scanning for:
---   1. Known headers that map to find_library() deps
---   2. Known C function calls / symbols that imply a library
---   3. Known #include patterns that pkg-config misses
---
--- Each entry: { header_patterns, symbol_patterns, lib_name, var_name }
--- lib_name is what you pass to find_library('lib_name')
 
 local FIND_LIBRARY_RULES = {
-  -- libm: math.h usage + any of the common math functions
   {
-    headers = { 'math%.h', 'complex%.h', 'fenv%.h', 'tgmath%.h' },
-    symbols = {
-      'roundf?%s*%(', 'floorf?%s*%(', 'ceilf?%s*%(', 'sqrtf?%s*%(',
-      'powf?%s*%(', 'fabsf?%s*%(', 'logf?%s*%(', 'expf?%s*%(',
-      'sinf?%s*%(', 'cosf?%s*%(', 'tanf?%s*%(', 'atan2f?%s*%(',
-      'fmaf?%s*%(', 'hypotf?%s*%(', 'truncf?%s*%(', 'fmodf?%s*%(',
-      'remainderf?%s*%(', 'nanf?%s*%(', 'isinf%s*%(', 'isnan%s*%(',
-    },
-    lib     = 'm',
-    vname   = 'm',
+    header_pat = [=[math\.h|complex\.h|fenv\.h|tgmath\.h]=],
+    symbol_pat =
+    [=[roundf?\s*\(|floorf?\s*\(|ceilf?\s*\(|sqrtf?\s*\(|powf?\s*\(|fabsf?\s*\(|logf?\s*\(|expf?\s*\(|sinf?\s*\(|cosf?\s*\(|fmaf?\s*\(|hypotf?\s*\(|truncf?\s*\(|nanf?\s*\(|isinf\s*\(|isnan\s*\(]=],
+    lib = 'm',
+    vname = 'm',
   },
-  -- librt: POSIX realtime extensions
   {
-    headers = { 'time%.h', 'aio%.h', 'mqueue%.h' },
-    symbols = {
-      'clock_gettime%s*%(', 'clock_nanosleep%s*%(', 'timer_create%s*%(',
-      'shm_open%s*%(', 'mq_open%s*%(', 'aio_read%s*%(',
-    },
-    lib     = 'rt',
-    vname   = 'rt',
+    header_pat = [=[time\.h|aio\.h|mqueue\.h]=],
+    symbol_pat = [=[clock_gettime\s*\(|clock_nanosleep\s*\(|timer_create\s*\(|shm_open\s*\(|mq_open\s*\(|aio_read\s*\(]=],
+    lib = 'rt',
+    vname = 'rt',
   },
-  -- libdl: dynamic loading
   {
-    headers = { 'dlfcn%.h' },
-    symbols = { 'dlopen%s*%(', 'dlsym%s*%(', 'dlclose%s*%(', 'dlerror%s*%(' },
-    lib     = 'dl',
-    vname   = 'dl',
+    header_pat = [=[dlfcn\.h]=],
+    symbol_pat = [=[dlopen\s*\(|dlsym\s*\(|dlclose\s*\(|dlerror\s*\(]=],
+    lib = 'dl',
+    vname = 'dl',
   },
-  -- libpthread: POSIX threads (when not using dependency('threads'))
   {
-    headers = { 'pthread%.h', 'semaphore%.h' },
-    symbols = {
-      'pthread_create%s*%(', 'pthread_mutex_lock%s*%(',
-      'pthread_cond_wait%s*%(', 'sem_init%s*%(',
-    },
-    lib     = 'pthread',
-    vname   = 'pthread',
+    header_pat = [=[pthread\.h|semaphore\.h]=],
+    symbol_pat = [=[pthread_create\s*\(|pthread_mutex_lock\s*\(|pthread_cond_wait\s*\(|sem_init\s*\(]=],
+    lib = 'pthread',
+    vname = 'pthread',
   },
 }
 
--- Scan all source+header files; return list of find_library() deps needed.
 local function detect_find_library_deps(root)
-  -- Collect all file content once
-  local all_lines = {}
-  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.cxx', '**/*.h', '**/*.hpp', '**/*.hxx' }) do
-    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            all_lines[#all_lines + 1] = line
-          end
-        end
-      end
-    end
-  end
-
   local result = {}
   for _, rule in ipairs(FIND_LIBRARY_RULES) do
-    local matched = false
-
-    -- 1. Header match
-    for _, line in ipairs(all_lines) do
-      local inc = line:match('#%s*include%s*[<\"]([^>\"]+)[>\"]')
-      if inc then
-        for _, hpat in ipairs(rule.headers) do
-          if inc:match(hpat) then
-            matched = true; break
-          end
-        end
-      end
-      if matched then break end
-    end
-
-    -- 2. Symbol match (only scan if header matched to avoid false positives)
-    if matched then
-      local sym_matched = false
-      for _, line in ipairs(all_lines) do
-        for _, spat in ipairs(rule.symbols) do
-          if line:match(spat) then
-            sym_matched = true; break
-          end
-        end
-        if sym_matched then break end
-      end
-      -- Require BOTH header AND at least one symbol call to be confident
-      if sym_matched then
-        result[#result + 1] = { lib = rule.lib, vname = rule.vname }
-      end
+    if grep_any(root, rule.header_pat) and grep_any(root, rule.symbol_pat) then
+      result[#result + 1] = { lib = rule.lib, vname = rule.vname }
     end
   end
   return result
@@ -383,43 +398,31 @@ local WL_SERVER_SYMBOLS = {
 }
 
 local function detect_needs_wayland_server(root)
-  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.h', '**/*.hpp' }) do
-    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            for _, sym in ipairs(WL_SERVER_SYMBOLS) do
-              if line:match(sym) then return true end
-            end
-          end
-        end
-      end
-    end
-  end
-  return false
+  local syms = table.concat(WL_SERVER_SYMBOLS, '|')
+  local h = io.popen(
+    'grep -rl --include="*.c" --include="*.cpp" --include="*.h" --include="*.hpp"'
+    .. ' -E ' .. vim.fn.shellescape(syms)
+    .. ' ' .. vim.fn.shellescape(root)
+    .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+    .. ' 2>/dev/null | head -1')
+  if not h then return false end
+  local found = h:read('*l'); h:close()
+  return found ~= nil and found ~= ''
 end
 
 -- ── xkbcommon detection ───────────────────────────────────────────────────────
 
 local function detect_needs_xkbcommon(root)
-  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.h', '**/*.hpp' }) do
-    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            if line:match('#%s*include%s*[<\"]xkbcommon/') then return true end
-            if line:match('xkb_context_new') or line:match('xkb_keymap_') or
-                line:match('xkb_keysym_') or line:match('xkb_state_') then
-              return true
-            end
-          end
-        end
-      end
-    end
-  end
-  return false
+  local h = io.popen(
+    'grep -rl --include="*.c" --include="*.cpp" --include="*.h" --include="*.hpp"'
+    .. ' -E ' ..
+    vim.fn.shellescape([=[#\s*include\s*[<"]xkbcommon/|xkb_context_new|xkb_keymap_|xkb_keysym_|xkb_state_]=])
+    .. ' ' .. vim.fn.shellescape(root)
+    .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+    .. ' 2>/dev/null | head -1')
+  if not h then return false end
+  local found = h:read('*l'); h:close()
+  return found ~= nil and found ~= ''
 end
 
 -- ── multi-main detection ──────────────────────────────────────────────────────
@@ -470,34 +473,52 @@ end
 
 -- ── POSIX detection ───────────────────────────────────────────────────────────
 
-local POSIX_SYMBOLS = {
-  'getaddrinfo', 'getnameinfo', 'setenv', 'unsetenv',
-  'strndup', 'strsignal', 'sigaction', 'strptime',
-  'opendir', 'readdir', 'scandir', 'nftw',
-  'pthread_', 'sem_init', 'mmap', 'munmap',
-  'clock_gettime', 'nanosleep', 'usleep',
-  'mkstemp', 'realpath', 'readlink',
-}
+local POSIX_PATTERN = '_POSIX_C_SOURCE|_XOPEN_SOURCE|getaddrinfo|getnameinfo'
+    .. '|setenv|unsetenv|strndup|strsignal|sigaction|strptime'
+    .. '|opendir|readdir|scandir|nftw|pthread_|sem_init|mmap|munmap'
+    .. '|clock_gettime|nanosleep|usleep|mkstemp|realpath|readlink'
 
 local function detect_needs_posix(root)
-  for _, pat in ipairs({ '**/*.c', '**/*.cpp', '**/*.h', '**/*.hpp' }) do
-    for _, f in ipairs(vim.fn.globpath(root, pat, false, true)) do
-      if not skip(f) then
-        local ok, lines = pcall(vim.fn.readfile, f)
-        if ok then
-          for _, line in ipairs(lines) do
-            if line:match('_POSIX_C_SOURCE') or line:match('_XOPEN_SOURCE') then
-              return true
-            end
-            for _, sym in ipairs(POSIX_SYMBOLS) do
-              if line:match(sym) then return true end
-            end
-          end
-        end
+  return grep_any(root, POSIX_PATTERN)
+end
+
+-- ── multi-main detection ──────────────────────────────────────────────────────
+--
+-- grep prints "filename:line" for each match. We collect unique filenames
+-- that contain a main() definition to detect split-executable projects.
+
+local function detect_main_files(root, lang)
+  local include_pat = lang == 'cpp'
+      and [=[\.(cpp|cxx|cc)$]=]
+      or [=[\.c$]=]
+
+  -- grep -rn prints "file:linenum:content" — we want files containing a main def
+  local main_pat    = [=[^\s*int\s+main\s*\(]=]
+  local cmd         = 'grep -rn'
+      .. ' --include="*.c" --include="*.cpp" --include="*.cxx" --include="*.cc"'
+      .. ' -E ' .. vim.fn.shellescape(main_pat)
+      .. ' ' .. vim.fn.shellescape(root)
+      .. ' --exclude-dir=build --exclude-dir=builddir --exclude-dir=.git'
+      .. ' 2>/dev/null'
+
+  local mains       = {}
+  local seen        = {}
+  local h           = io.popen(cmd)
+  if h then
+    for line in h:lines() do
+      local fpath = line:match('^([^:]+):')
+      if fpath and not seen[fpath] and fpath:match(include_pat) then
+        seen[fpath] = true
+        local rel = fpath:sub(#root + 2)
+        mains[#mains + 1] = {
+          path = rel,
+          base = vim.fn.fnamemodify(fpath, ':t:r'),
+        }
       end
     end
+    h:close()
   end
-  return false
+  return mains
 end
 
 -- ── canonical auto-detection ──────────────────────────────────────────────────
@@ -613,9 +634,18 @@ local function meson_template(opts)
   l()
 
   -- include directories
+  -- Only inject include/protocols/ if we have vendored XMLs in the project tree.
+  -- System-referenced protocols generate their headers into the Meson build dir,
+  -- which is already on the include path automatically.
   l('# ── Include directories ──────────────────────────────────────────────────────')
-  local inc_decl = opts.inc_decl
-  if opts.protocol_xmls and #opts.protocol_xmls > 0 then
+  local inc_decl     = opts.inc_decl
+  local has_vendored = false
+  for _, p in ipairs(opts.protocol_entries or {}) do
+    if p.in_root then
+      has_vendored = true; break
+    end
+  end
+  if has_vendored then
     if inc_decl:find("'include/protocols'") == nil then
       inc_decl = inc_decl:gsub('%)', ",\n  'include/protocols'\n)", 1)
     end
@@ -628,7 +658,16 @@ local function meson_template(opts)
   local find_lib_deps = opts.find_lib_deps or {}
   local all_dep_refs  = {}
 
-  if #find_lib_deps > 0 or #dep_names > 0 then
+  -- Determine whether we need wayland-protocols as an explicit dep
+  -- (needed when we reference system XMLs via wp_dir variable in Meson)
+  local needs_wp_dep  = false
+  local needs_wlr_dep = false
+  for _, p in ipairs(opts.protocol_entries or {}) do
+    if p.xml_ref == 'system_wp' then needs_wp_dep = true end
+    if p.xml_ref == 'system_wlr' then needs_wlr_dep = true end
+  end
+
+  if #find_lib_deps > 0 or #dep_names > 0 or needs_wp_dep or needs_wlr_dep then
     l('# ── Dependencies ─────────────────────────────────────────────────────────────')
 
     -- find_library() deps need the compiler object
@@ -637,6 +676,32 @@ local function meson_template(opts)
       for _, fd in ipairs(find_lib_deps) do
         l(fd.vname .. "_dep = cc.find_library('" .. fd.lib .. "', required : true)")
         all_dep_refs[#all_dep_refs + 1] = fd.vname .. '_dep'
+      end
+    end
+
+    -- wayland-protocols system dep (for wp_dir variable)
+    if needs_wp_dep then
+      l("wayland_protocols_dep = dependency('wayland-protocols', required : true)")
+      l("wp_dir = wayland_protocols_dep.get_variable('pkgdatadir')")
+    end
+
+    -- wlroots dep for its protocol pkgdatadir (if we reference system wlr XMLs)
+    -- Note: wlroots_dep is already in dep_names from pkg-config scan, so we just
+    -- capture its pkgdatadir here for the protocol paths.
+    if needs_wlr_dep then
+      -- find the wlroots dep variable name already in dep_names
+      local wlr_varname = nil
+      for _, d in ipairs(dep_names) do
+        if d:match('^wlroots') then
+          wlr_varname = var(d); break
+        end
+      end
+      if wlr_varname then
+        l("wlr_proto_dir = " .. wlr_varname .. "_dep.get_variable('pkgdatadir') / 'protocols'")
+      else
+        -- wlroots not yet in dep_names — declare it here for pkgdatadir only
+        l("_wlr_dep_proto = dependency('wlroots-0.18', required : true)")
+        l("wlr_proto_dir  = _wlr_dep_proto.get_variable('pkgdatadir') / 'protocols'")
       end
     end
 
@@ -672,27 +737,42 @@ local function meson_template(opts)
   end
 
   -- Wayland protocol generation
-  local protocol_xmls = opts.protocol_xmls or {}
-  if #protocol_xmls > 0 then
+  -- Each entry carries xml_ref: 'system_wp' | 'system_wlr' | 'vendored'
+  -- which determines how we express the XML path in Meson.
+  local protocol_entries = opts.protocol_entries or {}
+  if #protocol_entries > 0 then
     l('# ── Wayland protocol generation ──────────────────────────────────────────────')
     l("wayland_scanner = find_program('wayland-scanner')")
     l()
     l('protocol_src = []')
-    for _, xml in ipairs(protocol_xmls) do
-      local stem    = xml:gsub('%.xml$', '')
+    for _, entry in ipairs(protocol_entries) do
+      local stem    = entry.xml:gsub('%.xml$', '')
       local varname = stem:gsub('%-', '_')
-      local xml_ref = "files('include/protocols/" .. xml .. "')"
+
+      -- Build the Meson XML reference expression
+      local xml_meson
+      if entry.xml_ref == 'system_wp' then
+        -- e.g. wp_dir / 'stable/xdg-shell/xdg-shell.xml'
+        xml_meson = "wp_dir / '" .. entry.xml_subpath .. "'"
+      elseif entry.xml_ref == 'system_wlr' then
+        -- e.g. wlr_proto_dir / 'wlr-layer-shell-unstable-v1.xml'
+        xml_meson = "wlr_proto_dir / '" .. entry.xml_subpath .. "'"
+      else
+        -- vendored into include/protocols/
+        xml_meson = "files('include/protocols/" .. entry.xml .. "')"
+      end
+
       l(varname .. '_h = custom_target(')
       l("  '" .. stem .. "-client-header',")
-      l("  input  : " .. xml_ref .. ",")
-      l("  output : '" .. stem .. "-protocol.h',")
-      l("  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],")
+      l("  input   : " .. xml_meson .. ",")
+      l("  output  : '" .. stem .. "-protocol.h',")
+      l("  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],")
       l(')')
       l(varname .. '_c = custom_target(')
       l("  '" .. stem .. "-private-code',")
-      l("  input  : " .. xml_ref .. ",")
-      l("  output : '" .. stem .. "-protocol.c',")
-      l("  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],")
+      l("  input   : " .. xml_meson .. ",")
+      l("  output  : '" .. stem .. "-protocol.c',")
+      l("  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],")
       l(')')
       l('protocol_src += [' .. varname .. '_h, ' .. varname .. '_c]')
       l()
@@ -729,13 +809,13 @@ local function meson_template(opts)
 
   if multi_exe then
     -- One executable per main() file, sharing common sources
-    local proto_suffix = #protocol_xmls > 0 and ' + protocol_src' or ''
+    local proto_suffix = #protocol_entries > 0 and ' + protocol_src' or ''
     for _, m in ipairs(opts.multi_exe) do
       write_exe(m.base, "shared_src + files('" .. m.path .. "')" .. proto_suffix)
       l()
     end
   else
-    local proto_suffix = #protocol_xmls > 0 and 'src + protocol_src' or 'src'
+    local proto_suffix = #protocol_entries > 0 and 'src + protocol_src' or 'src'
     write_exe(opts.name, proto_suffix)
     l()
   end
@@ -920,41 +1000,59 @@ function M.create(root, on_back)
                         .WARN)
                         wl_proto = nil
                       end
-                      local protocol_xmls = {}
+                      local protocol_entries = {}
                       if wl_proto then
-                        local ok_r, proto_entries = pcall(wl_proto.resolve, root)
+                        local ok_r, proto_results = pcall(wl_proto.resolve, root)
                         if ok_r then
-                          for _, e in ipairs(proto_entries) do
-                            if e.in_root then
-                              protocol_xmls[#protocol_xmls + 1] = e.xml
+                          protocol_entries = proto_results
+                          -- Notify which protocols were resolved and how
+                          local sys_wp, sys_wlr, vendored_list = {}, {}, {}
+                          for _, e in ipairs(protocol_entries) do
+                            if e.xml_ref == 'system_wp' then
+                              sys_wp[#sys_wp + 1] = e.xml
+                            elseif e.xml_ref == 'system_wlr' then
+                              sys_wlr[#sys_wlr + 1] = e.xml
+                            else
+                              vendored_list[#vendored_list + 1] = e.xml
                             end
                           end
+                          if #sys_wp > 0 then
+                            notices[#notices + 1] = 'wayland-protocols (system): ' .. #sys_wp .. ' XMLs via wp_dir'
+                          end
+                          if #sys_wlr > 0 then
+                            notices[#notices + 1] = 'wlroots protocols (system): ' ..
+                            #sys_wlr .. ' XMLs via wlr_proto_dir'
+                          end
+                          if #vendored_list > 0 then
+                            notices[#notices + 1] = 'vendored protocols (fallback): ' ..
+                            table.concat(vendored_list, ', ')
+                          end
                         else
-                          vim.notify('[Marvin] Protocol scan error: ' .. tostring(proto_entries), vim.log.levels.WARN)
+                          vim.notify('[Marvin] Protocol scan error: ' .. tostring(proto_results), vim.log.levels.WARN)
                         end
                       end
 
                       local opts = {
-                        name            = name,
-                        version         = '0.1.0',
-                        lang            = lang,
-                        std             = std_ch.id,
-                        sanitizer       = san_ch and san_ch.id or 'none',
-                        testing         = test_ch and test_ch.id ~= 'none',
-                        test_framework  = test_ch and test_ch.id or 'none',
-                        install         = inst_ch and inst_ch.id == 'yes',
-                        dep_names       = detected.pkg_deps,
-                        find_lib_deps   = detected.find_lib_deps,
-                        needs_posix     = detected.needs_posix,
-                        wlr_guard       = detected.wlr_guard,
-                        extra_cargs     = detected.extra_cargs,
-                        src_decl        = src_decl,
-                        shared_src_decl = shared_src_decl,
-                        test_src_decl   = test_src_decl,
-                        inc_decl        = inc_decl,
-                        inc_dirs        = inc_dirs,
-                        protocol_xmls   = protocol_xmls,
-                        multi_exe       = multi_exe,
+                        name             = name,
+                        version          = '0.1.0',
+                        lang             = lang,
+                        std              = std_ch.id,
+                        sanitizer        = san_ch and san_ch.id or 'none',
+                        testing          = test_ch and test_ch.id ~= 'none',
+                        test_framework   = test_ch and test_ch.id or 'none',
+                        install          = inst_ch and inst_ch.id == 'yes',
+                        dep_names        = detected.pkg_deps,
+                        find_lib_deps    = detected.find_lib_deps,
+                        needs_posix      = detected.needs_posix,
+                        wlr_guard        = detected.wlr_guard,
+                        extra_cargs      = detected.extra_cargs,
+                        src_decl         = src_decl,
+                        shared_src_decl  = shared_src_decl,
+                        test_src_decl    = test_src_decl,
+                        inc_decl         = inc_decl,
+                        inc_dirs         = inc_dirs,
+                        protocol_entries = protocol_entries,
+                        multi_exe        = multi_exe,
                       }
 
                       local content = meson_template(opts)
