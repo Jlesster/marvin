@@ -244,10 +244,10 @@ end
 function M.generate_project(archetype, details, directory)
 	local maven_cmd = require("marvin").get_mvn_cmd()
 
-	-- -Dmaven.repo.local is not needed — Maven will use ~/.m2 as normal.
-	-- -DinteractiveMode=false prevents Maven from blocking waiting for stdin.
+	-- Pin maven-archetype-plugin to 3.2.1 explicitly to avoid the Velocity 2.x
+	-- parser bug introduced in 3.4.x which breaks ${r"${...}"} template syntax.
 	local cmd = string.format(
-		"%s archetype:generate -B -DinteractiveMode=false"
+		"%s org.apache.maven.plugins:maven-archetype-plugin:3.2.1:generate -B -DinteractiveMode=false"
 			.. " -DarchetypeGroupId=%s -DarchetypeArtifactId=%s -DarchetypeVersion=%s"
 			.. " -DgroupId=%s -DartifactId=%s -Dversion=%s -Dpackage=%s",
 		maven_cmd,
