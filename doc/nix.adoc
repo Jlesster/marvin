@@ -1,0 +1,179 @@
+# Nix/NixVim Installation Guide
+
+This guide covers installing and configuring marvin.nvim using Nix.
+
+## Quick Start with Home Manager
+
+### Minimal Configuration
+
+```nix
+{ inputs, outputs, ... }:
+let
+  system = "x86_64-linux";
+  pkgs = inputs.nixpkgs.legacyPackages.${system};
+in
+{
+  imports = [
+    inputs.marvin-nvim.homeManagerModules.marvin-nvim
+  ];
+
+  programs.neovim = {
+    enable = true;
+    plugins = [ inputs.marvin-nvim.packages.${system}.default ];
+  };
+
+  programs.marvin-nvim = {
+    enable = true;
+  };
+}
+```
+
+### Complete Configuration
+
+```nix
+programs.marvin-nvim = {
+  enable = true;
+
+  ui-backend = "snacks";
+
+  terminal = {
+    position = "float";
+    size = 0.5;
+    close-on-success = false;
+  };
+
+  quickfix = {
+    auto-open = true;
+    height = 12;
+  };
+
+  java = {
+    enable-javadoc = true;
+    maven-command = "mvn";
+    build-tool = "maven";
+  };
+
+  rust.profile = "dev";
+
+  cpp = {
+    build-tool = "cmake";
+    standard = "c++20";
+  };
+};
+```
+
+## NixVim (NixOS Module) Integration
+
+If you're using [nixvim](https://github.com/nix-community/nixvim):
+
+```nix
+{ inputs, ... }:
+{
+  imports = [
+    inputs.marvin-nvim.homeManagerModules.marvin-nvim
+  ];
+
+  programs.nixvim = {
+    enable = true;
+  };
+
+  programs.marvin-nvim = {
+    enable = true;
+    ui-backend = "snacks";
+    java.build-tool = "maven";
+    cpp.standard = "c++20";
+  };
+}
+```
+
+## NixOS Standalone Module
+
+For use in `/etc/nixos/configuration.nix`:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  imports = [
+    inputs.home-manager.nixosModules.home-manager
+    ./marvin-nvim-module.nix  # Copy from nix/examples/nixos-module.nix
+  ];
+
+  home-manager.useUserPackages = true;
+  home-manager.users.jless = {
+    programs.neovim.enable = true;
+    programs.marvin-nvim.enable = true;
+  };
+}
+```
+
+## Development Shell
+
+Enter the development environment:
+
+```bash
+nix develop
+```
+
+This provides:
+- Neovim (unwrapped)
+- lua-language-server
+- stylua
+- cmake, gcc, make
+- maven, gradle
+- rustc, cargo
+- go, jdk
+- graalvm-ce
+
+## Overlay Usage
+
+To override the plugin package:
+
+```nix
+{ inputs, ... }:
+{
+  nixpkgs.overlays = [
+    inputs.marvin-nvim.overlays.default
+  ];
+}
+```
+
+## Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable` | bool | false | Enable the plugin |
+| `ui-backend` | enum | "auto" | UI backend: auto, snacks, dressing, builtin |
+| `terminal.position` | enum | "float" | Terminal position |
+| `terminal.size` | float | 0.4 | Terminal size |
+| `terminal.close-on-success` | bool | false | Auto-close on success |
+| `quickfix.auto-open` | bool | true | Auto-open quickfix |
+| `quickfix.height` | int | 10 | Quickfix window height |
+| `java.build-tool` | enum | "auto" | auto, maven, gradle |
+| `java.enable-javadoc` | bool | false | Generate Javadoc |
+| `rust.profile` | enum | "dev" | dev, release |
+| `cpp.build-tool` | enum | "auto" | auto, cmake, make, gcc |
+| `cpp.compiler` | str | "g++" | C++ compiler |
+| `cpp.standard` | enum | "c++17" | C++ standard |
+| `cpp.nix.cc` | null, str | null | Force C compiler |
+| `cpp.nix.cxx` | null, str | null | Force C++ compiler |
+
+## Keymaps
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `keymaps.dashboard` | `<leader>m` | Open dashboard |
+| `keymaps.jason` | `<leader>j` | Java prefix |
+| `keymaps.jason-build` | `<leader>jc` | Build Java |
+| `keymaps.jason-run` | `<leader>jr` | Run Java |
+| `keymaps.jason-test` | `<leader>jt` | Run tests |
+| `keymaps.jason-clean` | `<leader>jx` | Clean build |
+| `keymaps.jason-console` | `<leader>jo` | Debug console |
+
+## Examples
+
+See `nix/examples/` for complete configurations:
+
+- `flake-minimal.nix` - Minimal setup
+- `flake-full.nix` - Full configuration
+- `nixos-nixvim.nix` - NixOS with nixvim
+- `nixos-module.nix` - Standalone NixOS module
