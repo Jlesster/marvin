@@ -210,7 +210,7 @@ function M.confirm_and_generate(archetype, details)
 		end
 
 		if choice.id == "confirm" then
-			ui().input({ prompt = "󰉋 Output Directory", default = vim.fn.getcwd() }, function(dir)
+			ui().input({ prompt = "󰉋 Output Directory", default = vim.fn.expand("~/Code/java") }, function(dir)
 				if dir then
 					M.generate_project(archetype, details, dir)
 				end
@@ -259,6 +259,18 @@ function M.generate_project(archetype, details, directory)
 		details.version,
 		details.group_id
 	)
+
+	-- Expand ~ and resolve to absolute path
+	directory = vim.fn.expand(directory)
+
+	-- The cwd must exist before jobstart — create it if needed
+	if vim.fn.isdirectory(directory) == 0 then
+		local ok = vim.fn.mkdir(directory, "p")
+		if ok == 0 then
+			ui().notify("❌ Cannot create directory: " .. directory, vim.log.levels.ERROR)
+			return
+		end
+	end
 
 	ui().notify("Generating " .. details.artifact_id .. "…", vim.log.levels.INFO)
 
