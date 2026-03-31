@@ -5,6 +5,13 @@ local M = {}
 
 M.config = {}
 
+function M.get_mvn_cmd()
+  local cmd = M.config.maven and M.config.maven.maven_command or 'mvn'
+  local full_path = vim.fn.exepath(cmd)
+  if full_path ~= '' then return full_path end
+  return cmd
+end
+
 function M.setup(opts)
   M.config = require('marvin.config').setup(opts)
 

@@ -71,7 +71,8 @@ end
 
 function M.native_image_cmd_maven(_project)
 	local cfg = M.get_config()
-	local parts = { "mvn -Pnative native:compile" }
+	local mvn = require('marvin').get_mvn_cmd()
+	local parts = { mvn .. " -Pnative native:compile" }
 	if cfg.extra_build_args ~= "" then
 		parts[#parts + 1] = '-Dnative.image.buildArgs="' .. cfg.extra_build_args .. '"'
 	end

@@ -159,12 +159,12 @@ end
 
 -- ── Maven execution ───────────────────────────────────────────────────────────
 function M.generate_project(archetype, details, directory)
-  local config = require('marvin').config
+  local maven_cmd = require('marvin').get_mvn_cmd()
   local cmd    = string.format(
     '%s archetype:generate -B ' ..
     '-DarchetypeGroupId=%s -DarchetypeArtifactId=%s -DarchetypeVersion=%s ' ..
     '-DgroupId=%s -DartifactId=%s -Dversion=%s -Dpackage=%s',
-    config.maven_command,
+    maven_cmd,
     archetype.group_id, archetype.artifact_id, archetype.version,
     details.group_id, details.artifact_id, details.version, details.group_id)
 

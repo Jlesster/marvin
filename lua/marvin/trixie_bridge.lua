@@ -189,6 +189,13 @@ function M.push_project()
     generic = '',
   }
 
+  local mvn_cmd = ''
+  pcall(function()
+    mvn_cmd = require('marvin').get_mvn_cmd()
+    build_cmds.maven = mvn_cmd .. ' compile'
+    run_cmds.maven = mvn_cmd .. ' exec:java'
+  end)
+
   send_json('marvin_project', {
     root      = root,
     name      = name,

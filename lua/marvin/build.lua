@@ -5,6 +5,8 @@ local M = {}
 
 M._run_args = {}
 
+local function mvn() return require('marvin').get_mvn_cmd() end
+
 function M.get_args(root, action)
 	return (M._run_args[root] or {})[action] or ""
 end
@@ -1115,14 +1117,14 @@ M.cpp = CPP
 
 local B = {
 	maven = {
-		build = "mvn compile",
+		build = function() return mvn() .. " compile" end,
 		run = function(p)
-			return "mvn exec:java -Dexec.mainClass=" .. M.find_main_class(p)
+			return mvn() .. " exec:java -Dexec.mainClass=" .. M.find_main_class(p)
 		end,
-		test = "mvn test",
-		clean = "mvn clean",
-		install = "mvn install",
-		package = "mvn package",
+		test = function() return mvn() .. " test" end,
+		clean = function() return mvn() .. " clean" end,
+		install = function() return mvn() .. " install" end,
+		package = function() return mvn() .. " package" end,
 	},
 	gradle = {
 		build = "./gradlew build",
@@ -1652,7 +1654,7 @@ function M.get_test_cmd_filtered(project, filter)
 		return "go test ./... -run " .. filter
 	end
 	if t == "maven" then
-		return "mvn test -Dtest=" .. filter
+		return mvn() .. " test -Dtest=" .. filter
 	end
 	if t == "gradle" then
 		return "./gradlew test --tests " .. filter

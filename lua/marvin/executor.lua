@@ -21,8 +21,7 @@ function M.run(goal, options)
     vim.notify('No Maven project found', vim.log.levels.ERROR); return
   end
 
-  local config = require('marvin').config
-  local parts  = { config.maven_command }
+  local parts  = { require('marvin').get_mvn_cmd() }
   if options.profile then parts[#parts + 1] = '-P' .. options.profile end
   parts[#parts + 1] = goal
   local cmd = table.concat(parts, ' ')
