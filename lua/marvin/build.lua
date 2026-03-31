@@ -5,7 +5,9 @@ local M = {}
 
 M._run_args = {}
 
-local function mvn() return require('marvin').get_mvn_cmd() end
+local function mvn()
+	return require("marvin").get_mvn_cmd()
+end
 
 function M.get_args(root, action)
 	return (M._run_args[root] or {})[action] or ""
@@ -55,22 +57,23 @@ end
 local function compiler(lang)
 	local cfg = cpp_cfg()
 	local nix = require("marvin.nix")
-	-- Respect explicit Nix overrides from config
+
+	-- Honour explicit Nix overrides in config
 	if lang == "cpp" then
-		local cxx = (cfg.nix and cfg.nix.cxx) or nil
+		local cxx = cfg.nix and cfg.nix.cxx
 		if cxx then
 			return nix.tool(cxx)
 		end
-		return nix.tool((cfg.compiler == "clang++") and "clang++" or "g++")
+		-- Respect cfg.compiler, but resolve through PATH
+		local want = (cfg.compiler == "clang++") and "clang++" or "g++"
+		return nix.tool(want)
 	else
-		local cc = (cfg.nix and cfg.nix.cc) or nil
+		local cc = cfg.nix and cfg.nix.cc
 		if cc then
 			return nix.tool(cc)
 		end
-		if cfg.compiler == "clang" then
-			return nix.tool("clang")
-		end
-		return nix.tool("gcc")
+		local want = (cfg.compiler == "clang") and "clang" or "gcc"
+		return nix.tool(want)
 	end
 end
 
@@ -112,15 +115,17 @@ function CPP.include_flags(root)
 		end
 	end
 
-	-- 2. On Nix: inject compiler-provided system includes so headers like
-	--    <wlr/backend.h> that live in /nix/store/... are found.
-	--    On non-Nix these are empty — the compiler finds /usr/include implicitly.
+	-- 2. On Nix: inject the compiler-known system include dirs
+	--    (NIX_CFLAGS_COMPILE + compiler -v output).
+	--    On FHS systems this list is empty — the compiler finds /usr/include
+	--    implicitly, so we don't duplicate it.
 	local cfg_nix = cpp_cfg().nix or {}
 	local extra_dirs = cfg_nix.extra_inc_dirs or nix.system_inc_dirs()
 	for _, d in ipairs(extra_dirs) do
 		dirs[#dirs + 1] = "-I" .. d
 	end
 
+	-- Deduplicate, preserving order
 	local seen, out = {}, {}
 	for _, f in ipairs(dirs) do
 		if not seen[f] then
@@ -788,7 +793,7 @@ function CPP.build_cmd(p)
 	local root = abs(p.root)
 	local lang = CPP.project_lang(p)
 	local lf_list = CPP.scan_ldflags(root)
-	local inc_list = CPP.include_flags(root)
+	local inc_list = CPP.include_flags(root) -- already Nix-aware
 
 	inject_local_lib_flags(root, lf_list, inc_list)
 
@@ -801,6 +806,14 @@ function CPP.build_cmd(p)
 	end
 	if #pkg.pkg_names > 0 then
 		vim.notify("[Marvin] pkg-config deps: " .. table.concat(pkg.pkg_names, " "), vim.log.levels.INFO)
+	end
+
+	-- Nix: prepend system library search dirs from NIX_LDFLAGS so the linker
+	-- finds libs in /nix/store without explicit -L flags.
+	local nix = require("marvin.nix")
+	for _, d in ipairs(nix.system_lib_dirs()) do
+		-- Insert at the front so project-local libs take priority
+		table.insert(lf_list, 1, "-L" .. d)
 	end
 
 	local posix_flag = CPP.needs_posix_define(root) and "-D_POSIX_C_SOURCE=200809L" or nil
@@ -1077,12 +1090,14 @@ function CPP.show_info(p)
 		end, srcs),
 		"\n"
 	) or "    (none found)"
-	local main_list = #mains > 0 and table.concat(
-		vim.tbl_map(function(f)
-			return "    " .. f
-		end, mains),
-		"\n"
-	) or '    (none — no file contains "int main(")'
+	local main_list = #mains > 0
+			and table.concat(
+				vim.tbl_map(function(f)
+					return "    " .. f
+				end, mains),
+				"\n"
+			)
+		or '    (none — no file contains "int main(")'
 
 	local lines = {
 		"",
@@ -1117,14 +1132,24 @@ M.cpp = CPP
 
 local B = {
 	maven = {
-		build = function() return mvn() .. " compile" end,
+		build = function()
+			return mvn() .. " compile"
+		end,
 		run = function(p)
 			return mvn() .. " exec:java -Dexec.mainClass=" .. M.find_main_class(p)
 		end,
-		test = function() return mvn() .. " test" end,
-		clean = function() return mvn() .. " clean" end,
-		install = function() return mvn() .. " install" end,
-		package = function() return mvn() .. " package" end,
+		test = function()
+			return mvn() .. " test"
+		end,
+		clean = function()
+			return mvn() .. " clean"
+		end,
+		install = function()
+			return mvn() .. " install"
+		end,
+		package = function()
+			return mvn() .. " package"
+		end,
 	},
 	gradle = {
 		build = "./gradlew build",

@@ -931,17 +931,19 @@ local function step_cpp_std(opts, root, flags)
 end
 
 local function step_compiler(opts, root, lang, flags)
+	local nix = require("marvin.nix")
 	local compilers = lang == "c"
 			and {
-				{ id = "gcc", label = "gcc", desc = "GNU C Compiler (recommended)" },
-				{ id = "clang", label = "clang", desc = "LLVM Clang" },
+				{ id = nix.tool("gcc"), label = "gcc", desc = "GNU C Compiler (recommended)" },
+				{ id = nix.tool("clang"), label = "clang", desc = "LLVM Clang" },
 				{ id = "cc", label = "cc", desc = "System default" },
 			}
 		or {
-			{ id = "g++", label = "g++", desc = "GNU C++ Compiler (recommended)" },
-			{ id = "clang++", label = "clang++", desc = "LLVM Clang++" },
+			{ id = nix.tool("g++"), label = "g++", desc = "GNU C++ Compiler (recommended)" },
+			{ id = nix.tool("clang++"), label = "clang++", desc = "LLVM Clang++" },
 			{ id = "c++", label = "c++", desc = "System default" },
 		}
+
 	ui().select(compilers, {
 		prompt = "Compiler",
 		format_item = function(it)
@@ -951,7 +953,7 @@ local function step_compiler(opts, root, lang, flags)
 		if not choice then
 			return
 		end
-		opts.compiler = choice.id
+		opts.compiler = choice.id -- already resolved to full path via nix.tool()
 		if lang == "c" then
 			step_c_std(opts, root, flags)
 		else
