@@ -19,8 +19,12 @@ local MARKERS         = {
   makefile = { files = { 'Makefile', 'makefile' }, lang = 'cpp' },
 }
 
+-- Priority order matters when multiple markers exist in the same directory.
+-- cmake/meson/makefile are listed before maven/gradle so that Android NDK
+-- projects (which carry both a build.gradle AND a CMakeLists.txt) are
+-- detected as C/C++ rather than Java.
 local MARKER_PRIORITY = {
-  'maven', 'gradle', 'cargo', 'go_mod', 'cmake', 'meson', 'makefile',
+  'cargo', 'go_mod', 'cmake', 'meson', 'makefile', 'maven', 'gradle',
 }
 
 -- ── Tool availability ─────────────────────────────────────────────────────────
@@ -371,8 +375,17 @@ function M.detect()
     curr = cwd
   end
 
-  local dir  = curr
-  local prev = nil
+  local dir     = curr
+  local prev    = nil
+
+  -- Determine the ceiling for the upward walk.
+  -- When buf_dir is inside cwd we must not walk above cwd — doing so causes
+  -- marvin to pick up a Java/Gradle project that lives in an ancestor directory
+  -- (common with Android NDK projects that have both build.gradle AND a
+  -- CMakeLists.txt/Makefile at the same level or below the cwd).
+  -- When buf_dir is outside cwd entirely (editing a file from another tree)
+  -- we have no sensible ceiling, so we allow the walk to reach the fs root.
+  local ceiling = (buf_dir and buf_dir:sub(1, #cwd) == cwd) and cwd or nil
 
   while dir ~= '' and dir ~= prev do
     for _, ptype in ipairs(MARKER_PRIORITY) do
@@ -390,6 +403,8 @@ function M.detect()
         return M._project
       end
     end
+    -- Stop after inspecting the ceiling directory (don't go above it).
+    if ceiling and dir == ceiling then break end
     prev = dir
     dir  = vim.fn.fnamemodify(dir, ':h'):gsub('/+$', '')
   end
