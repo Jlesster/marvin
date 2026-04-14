@@ -68,8 +68,21 @@ local META = {
 }
 
 -- ── Language-specific extras ──────────────────────────────────────────────────
+-- Replace the bottom of the EXTRAS block (the gradle line) with this.
+-- Pull the shared logic out as a named local before the table is constructed.
+
+local function graalvm_extras(_p)
+  return {
+    sep('GraalVM'),
+    item('j_graal_build', '󰂮', 'Build Native Image', 'Compile to native binary'),
+    item('j_graal_run', '󰐊', 'Run Native Binary', 'Execute native build'),
+    item('j_graal_agent', '󰋊', 'Run with Agent', 'Collect reflection config'),
+    item('j_graal_info', '󰙅', 'GraalVM Info', 'Status / install guide'),
+  }
+end
+
 local EXTRAS = {
-  cargo = function(_p)
+  cargo    = function(_p)
     local profile = require('marvin').config.rust.profile
     return {
       sep('Rust'),
@@ -81,7 +94,7 @@ local EXTRAS = {
       item('j_doc', '󰈙', 'Doc', 'cargo doc --open'),
     }
   end,
-  go_mod = function(_p)
+  go_mod   = function(_p)
     return {
       sep('Go'),
       item('j_go_race', '󰍉', 'Test (race)', 'go test -race ./...'),
@@ -90,7 +103,7 @@ local EXTRAS = {
       item('j_go_doc', '󰈙', 'godoc', 'godoc -http=:6060'),
     }
   end,
-  cmake = function(p)
+  cmake    = function(p)
     local configured = vim.fn.isdirectory(p.root .. '/build') == 1
     return {
       sep('CMake'),
@@ -99,7 +112,7 @@ local EXTRAS = {
       item('j_build_file', '󰐊', 'Build Current File', 'Compile active buffer with auto-flags'),
     }
   end,
-  meson = function(p)
+  meson    = function(p)
     local configured = vim.fn.isdirectory(p.root .. '/builddir') == 1
         or vim.fn.isdirectory(p.root .. '/build') == 1
     return {
@@ -119,16 +132,11 @@ local EXTRAS = {
       item('j_build_file', '󰐊', 'Build Current File', 'Compile active buffer with auto-flags'),
     }
   end,
-  maven = function(_p)
-    return {
-      sep('GraalVM'),
-      item('j_graal_build', '󰂮', 'Build Native Image', 'Compile to native binary'),
-      item('j_graal_run', '󰐊', 'Run Native Binary', 'Execute native build'),
-      item('j_graal_agent', '󰋊', 'Run with Agent', 'Collect reflection config'),
-      item('j_graal_info', '󰙅', 'GraalVM Info', 'Status / install guide'),
-    }
-  end,
-  gradle = function(p) return EXTRAS.maven(p) end,
+  -- Both maven and gradle share the GraalVM extras.
+  -- They now reference `graalvm_extras` (a plain local), not each other,
+  -- which avoids the self-referential table construction crash.
+  maven    = graalvm_extras,
+  gradle   = graalvm_extras,
 }
 
 -- ── Dashboard ─────────────────────────────────────────────────────────────────
