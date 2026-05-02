@@ -950,17 +950,83 @@ end
 
 local function meson_find_binary(p)
 	local root = abs(p.root)
-	local name = vim.fn.fnamemodify(root, ":t")
+	local name = (p.info and p.info.name) or vim.fn.fnamemodify(root, ":t")
+	for _, bdir in ipairs({ "builddir", "build" }) do
+		for _, candidate in ipairs({
+			root .. "/" .. bdir .. "/" .. name,
+			root .. "/" .. bdir .. "/src/" .. name,
+		}) do
+			if vim.fn.executable(candidate) == 1 then
+				return candidate
+			end
+		end
+		if vim.fn.isdirectory(root .. "/" .. bdir) == 1 then
+			local h = io.popen(string.format(
+				"find %s -maxdepth 3 -type f -executable ! -name '*.so*' ! -name '*.a' 2>/dev/null | head -1",
+				sh_path(root .. "/" .. bdir)
+			))
+			if h then
+				local found = vim.trim(h:read("*l") or "")
+				h:close()
+				if found ~= "" then
+					return found
+				end
+			end
+			return root .. "/" .. bdir .. "/" .. name
+		end
+	end
+	return root .. "/builddir/" .. name
+end
+
+local function meson_build_dir(root)
+	if vim.fn.isdirectory(root .. "/builddir") == 1 then return "builddir" end
+	if vim.fn.isdirectory(root .. "/build") == 1 then return "build" end
+	return nil
+end
+
+local function cmake_build_dir(root)
+	for _, d in ipairs({ "build", "cmake-build-debug", "cmake-build-release", "out" }) do
+		if vim.fn.isdirectory(root .. "/" .. d) == 1 then
+			return d
+		end
+	end
+	return nil
+end
+
+local function cmake_find_binary(p)
+	local root = abs(p.root)
+	local name = (p.info and p.info.name) or p.name or vim.fn.fnamemodify(root, ":t")
+	local bdir = cmake_build_dir(root) or "build"
 	for _, candidate in ipairs({
-		root .. "/builddir/" .. name,
-		root .. "/build/" .. name,
-		root .. "/builddir/src/" .. name,
+		root .. "/" .. bdir .. "/" .. name,
+		root .. "/" .. bdir .. "/src/" .. name,
+		root .. "/" .. bdir .. "/bin/" .. name,
+		root .. "/" .. bdir .. "/Release/" .. name,
+		root .. "/" .. bdir .. "/Debug/" .. name,
 	}) do
 		if vim.fn.executable(candidate) == 1 then
 			return candidate
 		end
 	end
-	return root .. "/builddir/" .. name
+	local h = io.popen(string.format(
+		"find %s -maxdepth 3 -type f -executable ! -name '*.so*' ! -name '*.a' 2>/dev/null | head -1",
+		sh_path(root .. "/" .. bdir)
+	))
+	if h then
+		local found = vim.trim(h:read("*l") or "")
+		h:close()
+		if found ~= "" then
+			return found
+		end
+	end
+	return root .. "/" .. bdir .. "/" .. name
+end
+
+local function gradle_cmd(p, subcmd)
+	local root = abs(p.root)
+	local has_wrapper = (p.info and p.info.has_wrapper)
+		and vim.fn.filereadable(root .. "/gradlew") == 1
+	return (has_wrapper and "./gradlew" or "gradle") .. " " .. subcmd
 end
 
 function CPP.generate_compile_commands(p)
@@ -1152,12 +1218,12 @@ local B = {
 		end,
 	},
 	gradle = {
-		build = "./gradlew build",
-		run = "./gradlew run",
-		test = "./gradlew test",
-		clean = "./gradlew clean",
-		install = "./gradlew publishToMavenLocal",
-		package = "./gradlew jar",
+		build   = function(p) return gradle_cmd(p, "build") end,
+		run     = function(p) return gradle_cmd(p, "run") end,
+		test    = function(p) return gradle_cmd(p, "test") end,
+		clean   = function(p) return gradle_cmd(p, "clean") end,
+		install = function(p) return gradle_cmd(p, "publishToMavenLocal") end,
+		package = function(p) return gradle_cmd(p, "jar") end,
 	},
 	cargo = {
 		build = function()
@@ -1189,44 +1255,84 @@ local B = {
 		package = "go build -o dist/ ./...",
 	},
 	cmake = {
-		build = "cmake --build build",
-		run = function(p)
-			return CPP.run_cmd(p)
+		build = function(p)
+			local root = abs(p.root)
+			local bdir = cmake_build_dir(root)
+			if not bdir then
+				return "cmake -B build -S . && cmake --build build"
+			end
+			return "cmake --build " .. bdir
 		end,
-		test = "ctest --test-dir build",
-		clean = "cmake --build build --target clean",
+		run = function(p)
+			return vim.fn.shellescape(cmake_find_binary(p))
+		end,
+		test = function(p)
+			local root = abs(p.root)
+			local bdir = cmake_build_dir(root) or "build"
+			return "ctest --test-dir " .. bdir
+		end,
+		clean = function(p)
+			local root = abs(p.root)
+			local bdir = cmake_build_dir(root) or "build"
+			return "cmake --build " .. bdir .. " --target clean"
+		end,
 		fmt = 'find src include -name "*.cpp" -o -name "*.h" -o -name "*.c" | xargs clang-format -i',
 		lint = 'clang-tidy $(find src -name "*.cpp" -o -name "*.c")',
-		install = "cmake --install build",
-		package = "cpack --config build/CPackConfig.cmake",
+		install = function(p)
+			local root = abs(p.root)
+			local bdir = cmake_build_dir(root) or "build"
+			return "cmake --install " .. bdir
+		end,
+		package = function(p)
+			local root = abs(p.root)
+			local bdir = cmake_build_dir(root) or "build"
+			return "cpack --config " .. bdir .. "/CPackConfig.cmake"
+		end,
 	},
 	meson = {
-		build = "meson compile -C builddir",
+		build = function(p)
+			local root = abs(p.root)
+			local bdir = meson_build_dir(root)
+			if not bdir then
+				return "meson setup builddir && meson compile -C builddir"
+			end
+			return "meson compile -C " .. bdir
+		end,
 		run = function(p)
 			return vim.fn.shellescape(meson_find_binary(p))
 		end,
-		test = "meson test -C builddir",
-		clean = "rm -rf builddir",
+		test = function(p)
+			local root = abs(p.root)
+			local bdir = meson_build_dir(root) or "builddir"
+			return "meson test -C " .. bdir
+		end,
+		clean = function(p)
+			local root = abs(p.root)
+			local bdir = meson_build_dir(root) or "builddir"
+			return "rm -rf " .. bdir
+		end,
 		fmt = 'clang-format -i $(find src include -name "*.cpp" -o -name "*.c" -o -name "*.h" 2>/dev/null)',
 		lint = 'clang-tidy $(find src include -name "*.cpp" -o -name "*.c" 2>/dev/null)',
-		install = "meson install -C builddir",
-		package = "meson compile -C builddir && meson dist -C builddir",
+		install = function(p)
+			local root = abs(p.root)
+			local bdir = meson_build_dir(root) or "builddir"
+			return "meson install -C " .. bdir
+		end,
+		package = function(p)
+			local root = abs(p.root)
+			local bdir = meson_build_dir(root) or "builddir"
+			return "meson compile -C " .. bdir .. " && meson dist -C " .. bdir
+		end,
 		setup = "meson setup builddir",
 		reconfigure = "meson setup --reconfigure builddir",
 	},
 	makefile = {
-		build = function(p)
-			return CPP.build_cmd(p)
-		end,
-		run = function(p)
-			return CPP.run_cmd(p)
-		end,
-		test = "make test",
-		clean = function(p)
-			return CPP.clean_cmd(p)
-		end,
-		fmt = 'find src include -name "*.cpp" -o -name "*.h" -o -name "*.c" 2>/dev/null | xargs clang-format -i',
-		lint = "make lint",
+		build   = "make",
+		run     = function(p) return CPP.run_cmd(p) end,
+		test    = "make test",
+		clean   = "make clean",
+		fmt     = 'find src include -name "*.cpp" -o -name "*.h" -o -name "*.c" 2>/dev/null | xargs clang-format -i',
+		lint    = "make lint",
 		install = "make install",
 		package = "make dist",
 	},
@@ -1469,52 +1575,15 @@ function M.build_and_run(prompt_args)
 	end
 
 	if p.type == "makefile" then
-		local root = abs(p.root)
-		local lang = CPP.project_lang(p)
-		local sources = CPP.all_sources(root, lang)
-		if #sources == 0 then
-			local other = lang == "c" and "cpp" or "c"
-			sources = CPP.all_sources(root, other)
-			if #sources > 0 then
-				lang = other
-			end
-		end
-		if #sources == 0 then
-			vim.notify("[Marvin] No C/C++ sources found in " .. root, vim.log.levels.ERROR)
-			return
-		end
-
-		if #sources == 1 then
-			local result = CPP.build_single_file_cmd(sources[1], abs(p.root))
-			local function do_run(run_args)
-				local run_cmd = esc(result.binary) .. (run_args ~= "" and (" " .. run_args) or "")
-				require("core.runner").execute(
-					vim.tbl_extend(
-						"force",
-						base_opts(p, "Build & Run", "build_run", ""),
-						{ cmd = result.cmd .. " && \\\n  " .. run_cmd }
-					)
-				)
-			end
-			if prompt_args then
-				local saved = M.get_args(p.root, "run")
-				vim.ui.input({ prompt = "Run args: ", default = saved }, function(args)
-					if args == nil then
-						return
-					end
-					M.set_args(p.root, "run", args)
-					do_run(args)
-				end)
-			else
-				do_run(M.get_args(p.root, "run"))
-			end
-			return
-		end
-
+		local bin = CPP.find_binary(p)
 		local function do_run(run_args)
-			local cmd = CPP.build_and_run_cmd(p, run_args)
+			local run_cmd = vim.fn.shellescape(bin)
+			if run_args ~= "" then
+				run_cmd = run_cmd .. " " .. run_args
+			end
 			require("core.runner").execute(
-				vim.tbl_extend("force", base_opts(p, "Build & Run", "build_run", ""), { cmd = cmd })
+				vim.tbl_extend("force", base_opts(p, "Build & Run", "build_run", ""),
+					{ cmd = "make && \\\n  " .. run_cmd })
 			)
 		end
 		if prompt_args then
@@ -1535,7 +1604,11 @@ function M.build_and_run(prompt_args)
 	if p.type == "cmake" then
 		local function do_run(run_args)
 			local bc = M.get_command("build", p)
-			local run = CPP.run_cmd(p, run_args)
+			local bin = cmake_find_binary(p)
+			local run = vim.fn.shellescape(bin)
+			if run_args and run_args ~= "" then
+				run = run .. " " .. run_args
+			end
 			require("core.runner").execute(
 				vim.tbl_extend(
 					"force",
@@ -1682,13 +1755,14 @@ function M.get_test_cmd_filtered(project, filter)
 		return mvn() .. " test -Dtest=" .. filter
 	end
 	if t == "gradle" then
-		return "./gradlew test --tests " .. filter
+		return gradle_cmd(project, "test --tests " .. filter)
 	end
 	if t == "makefile" or t == "cmake" then
 		return "ctest -R " .. filter
 	end
 	if t == "meson" then
-		return "meson test -C builddir --suite " .. filter
+		local bdir = meson_build_dir(abs(project.root)) or "builddir"
+		return "meson test -C " .. bdir .. " --suite " .. filter
 	end
 	return M.get_command("test", project)
 end
