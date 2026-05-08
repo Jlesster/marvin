@@ -128,128 +128,33 @@ local function scan_needs_wlr_unstable(root)
     return found ~= nil and found ~= ''
 end
 
--- ── pkg-config scan ───────────────────────────────────────────────────────────
+-- ── pkg-config dependency resolution ──────────────────────────────────────────
 --
--- Performance strategy: do everything in two bulk shell calls instead of one
--- per package.
---
--- 1. `pkg-config --list-all` → package list
--- 2. One `pkg-config --cflags-only-I <all pkgs...>` batch call per package list
---    chunk, piped through a small awk script that emits "pkg:dir" pairs.
---    This replaces ~500 individual popen() calls with ~1.
--- 3. Walk only the unique -I dirs we actually got back (usually <20).
--- 4. Build a header→pkg reverse map from those dirs using `find`.
-
-local _hdr_pkg_map_cache = nil
-local function get_hdr_pkg_map()
-    if _hdr_pkg_map_cache then return _hdr_pkg_map_cache end
-    local map = {}
-
-    -- Step 1: get all package names in one call
-    local h = io.popen('pkg-config --list-all 2>/dev/null')
-    if not h then
-        _hdr_pkg_map_cache = map; return map
-    end
-    local pkgs = {}
-    for line in h:lines() do
-        local name = line:match('^(%S+)')
-        if name then pkgs[#pkgs + 1] = name end
-    end
-    h:close()
-    if #pkgs == 0 then
-        _hdr_pkg_map_cache = map; return map
-    end
-
-    -- Step 2: batch cflags in chunks of 50 to avoid ARG_MAX issues.
-    -- For each pkg we emit "PKGNAME TAB dir" lines using an awk wrapper.
-    -- We use a shell loop so pkg-config errors on individual packages don't abort.
-    local dir_to_pkg = {} -- dir → first pkg that claimed it
-    local chunk_size = 50
-    for i = 1, #pkgs, chunk_size do
-        local chunk = {}
-        for j = i, math.min(i + chunk_size - 1, #pkgs) do
-            chunk[#chunk + 1] = pkgs[j]
-        end
-        -- emit "pkg\t-Idir" for each -I flag; one line per (pkg, dir) pair
-        local script = [[
-      for p in "$@"; do
-        flags=$(pkg-config --cflags-only-I "$p" 2>/dev/null)
-        for f in $flags; do
-          d="${f#-I}"
-          [ -n "$d" ] && printf '%s\t%s\n' "$p" "$d"
-        done
-        inc=$(pkg-config --variable=includedir "$p" 2>/dev/null)
-        [ -n "$inc" ] && printf '%s\t%s\n' "$p" "$inc"
-      done
-    ]]
-        local cmd = 'sh -c ' .. vim.fn.shellescape(script) .. ' -- ' .. table.concat(
-            vim.tbl_map(vim.fn.shellescape, chunk), ' ')
-        local ch = io.popen(cmd .. ' 2>/dev/null')
-        if ch then
-            for line in ch:lines() do
-                local pkg, dir = line:match('^([^\t]+)\t(.+)$')
-                if pkg and dir and not dir_to_pkg[dir] then
-                    dir_to_pkg[dir] = pkg
-                end
-            end
-            ch:close()
-        end
-    end
-
-    -- Step 3: also add guessed stem dirs (fast filesystem check, no shell)
-    for _, pkg in ipairs(pkgs) do
-        local stem = pkg:match('^([%a%d]+)')
-        if stem then
-            for _, base in ipairs({ '/usr/include', '/usr/local/include' }) do
-                local d = base .. '/' .. stem
-                if not dir_to_pkg[d] and vim.fn.isdirectory(d) == 1 then
-                    dir_to_pkg[d] = pkg
-                end
-            end
-        end
-    end
-
-    -- Step 4: walk unique dirs with a single `find` call to build header→pkg map.
-    -- Collect all dirs into one find invocation: find dir1 dir2 ... -maxdepth 2 -name '*.h'
-    local dirs = {}
-    for d in pairs(dir_to_pkg) do
-        if vim.fn.isdirectory(d) == 1 then dirs[#dirs + 1] = d end
-    end
-
-    if #dirs > 0 then
-        -- find prints "dir/relative/path.h" — we strip the base dir to get the key
-        local find_cmd = 'find '
-            .. table.concat(vim.tbl_map(vim.fn.shellescape, dirs), ' ')
-            .. ' -maxdepth 2 -name "*.h" -print 2>/dev/null'
-        local fh = io.popen(find_cmd)
-        if fh then
-            for fpath in fh:lines() do
-                -- match the longest prefix dir
-                for _, d in ipairs(dirs) do
-                    if fpath:sub(1, #d) == d then
-                        -- key is the path relative to the include dir, e.g. "gtk/gtk.h" or "gtk.h"
-                        local rel = fpath:sub(#d + 2) -- strip leading /
-                        if rel ~= '' and not map[rel] then
-                            map[rel] = dir_to_pkg[d]
-                        end
-                        break
-                    end
-                end
-            end
-            fh:close()
-        end
-    end
-
-    _hdr_pkg_map_cache = map
-    return map
-end
+-- On-demand: derive candidate package names from the include path and verify
+-- against the cached pkg-config package list. No bulk header scanning needed.
 
 local function include_to_pkg(inc)
-    local map = get_hdr_pkg_map()
-    if map[inc] then return map[inc] end
-    -- Also try just the filename without any leading path component
-    local fname = inc:match('([^/]+)$')
-    return fname and map[fname] or nil
+    local function try_candidate(name)
+        if not name or name == '' then return nil end
+        local resolved = resolve_pkg(name)
+        if resolved then return resolved end
+        local lower = name:lower()
+        if lower ~= name then
+            resolved = resolve_pkg(lower)
+            if resolved then return resolved end
+        end
+        return nil
+    end
+
+    local first = inc:match('^([^/]+)')
+    local pkg = try_candidate(first)
+    if pkg then return pkg end
+
+    local fname = inc:match('([^/]+)%.h$')
+    pkg = try_candidate(fname)
+    if pkg then return pkg end
+
+    return nil
 end
 
 -- Resolve a pkg name to its actual installed versioned name.
@@ -279,10 +184,13 @@ local function resolve_pkg(base)
     if all[base] then
         _pkg_resolve_cache[base] = base; return base
     end
-    -- versioned variant: find first entry that starts with base followed by - or space
-    for name in pairs(all) do
-        if name:sub(1, #base + 1) == base .. '-' then
-            _pkg_resolve_cache[base] = name; return name
+    -- versioned variant: find first entry that starts with base + common separator
+    for _, sep in ipairs({ '-', '+' }) do
+        local prefix = base .. sep
+        for name in pairs(all) do
+            if name:sub(1, #prefix) == prefix then
+                _pkg_resolve_cache[base] = name; return name
+            end
         end
     end
     _pkg_resolve_cache[base] = false; return nil
