@@ -48,6 +48,14 @@ function M.setup(opts)
     end,
   })
 
+  -- Re-apply highlights when colorscheme changes
+  vim.api.nvim_create_autocmd('ColorScheme', {
+    group    = group,
+    callback = function()
+      require('marvin.color').reload()
+    end,
+  })
+
   -- ── Keymaps ─────────────────────────────────────────────────────────────────
   local ok_km, km = pcall(require, 'marvin.keymaps')
   if ok_km then km.register(M.config.keymaps) end

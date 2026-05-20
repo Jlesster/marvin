@@ -172,140 +172,66 @@ local LINK_MAP = {
 	{ pat = "libavcodec", flags = { "-lavcodec", "-lavutil" } },
 }
 
--- ── Dynamic pkg-config reverse map ───────────────────────────────────────────
-local _hdr_to_pkg_cache = nil
+-- ── pkg-config dependency resolution ──────────────────────────────────────────
+-- On-demand: derive candidate package names from the include path and verify
+-- against the cached pkg-config package list. No bulk header scanning needed.
 
-local function build_header_pkg_map()
-	if _hdr_to_pkg_cache then
-		return _hdr_to_pkg_cache
-	end
-	local map = {}
-	local nix = require("marvin.nix")
-
-	-- Build include root list: FHS defaults + compiler-derived (covers Nix store)
-	local bases = { "/usr/include", "/usr/local/include" }
-	for _, d in ipairs(nix.compiler_inc_dirs()) do
-		bases[#bases + 1] = d
-	end
-
-	local h = io.popen("pkg-config --list-all 2>/dev/null")
-	if not h then
-		_hdr_to_pkg_cache = map
-		return map
-	end
-	local pkg_names = {}
-	for line in h:lines() do
-		local name = line:match("^(%S+)")
-		if name then
-			pkg_names[#pkg_names + 1] = name
+local _pkg_list_cache = nil
+local function get_pkg_list()
+	if _pkg_list_cache then return _pkg_list_cache end
+	local set = {}
+	local h = io.popen('pkg-config --list-all 2>/dev/null')
+	if h then
+		for line in h:lines() do
+			local name = line:match('^(%S+)')
+			if name then set[name] = true end
 		end
+		h:close()
 	end
-	h:close()
-
-	local scanned_dirs = {}
-	for _, pkg in ipairs(pkg_names) do
-		local dirs = {}
-
-		local ch = io.popen("pkg-config --cflags-only-I " .. pkg .. " 2>/dev/null")
-		if ch then
-			for line in ch:lines() do
-				for token in line:gmatch("%S+") do
-					if token:sub(1, 2) == "-I" then
-						dirs[#dirs + 1] = token:sub(3)
-					end
-				end
-			end
-			ch:close()
-		end
-
-		local ih = io.popen("pkg-config --variable=includedir " .. pkg .. " 2>/dev/null")
-		if ih then
-			local d = vim.trim(ih:read("*l") or "")
-			ih:close()
-			if d ~= "" then
-				dirs[#dirs + 1] = d
-			end
-		end
-
-		-- Guess <base>/<stem> subdir using all known bases (FHS + Nix)
-		local stem = pkg:match("^([%w]+)")
-		if stem then
-			for _, base in ipairs(bases) do
-				local guessed = base .. "/" .. stem
-				if vim.fn.isdirectory(guessed) == 1 then
-					dirs[#dirs + 1] = base
-					dirs[#dirs + 1] = guessed
-				end
-			end
-		end
-
-		for _, dir in ipairs(dirs) do
-			if not scanned_dirs[dir] and vim.fn.isdirectory(dir) == 1 then
-				scanned_dirs[dir] = true
-				local fh = io.popen("ls " .. vim.fn.shellescape(dir) .. " 2>/dev/null")
-				if fh then
-					for entry in fh:lines() do
-						if entry:match("%.h$") and not map[entry] then
-							map[entry] = pkg
-						elseif vim.fn.isdirectory(dir .. "/" .. entry) == 1 then
-							local sh = io.popen("ls " .. vim.fn.shellescape(dir .. "/" .. entry) .. " 2>/dev/null")
-							if sh then
-								for hdr in sh:lines() do
-									if hdr:match("%.h$") then
-										local key = entry .. "/" .. hdr
-										if not map[key] then
-											map[key] = pkg
-										end
-									end
-								end
-								sh:close()
-							end
-						end
-					end
-					fh:close()
-				end
-			end
-		end
-	end
-
-	_hdr_to_pkg_cache = map
-	return map
+	_pkg_list_cache = set
+	return set
 end
 
-local function include_to_pkg(include_path)
-	local map = build_header_pkg_map()
-	if map[include_path] then
-		return map[include_path]
+local function include_to_pkg(inc)
+	local function try_candidate(name)
+		if not name or name == '' then return nil end
+		local resolved = resolve_pkg(name)
+		if resolved then return resolved end
+		local lower = name:lower()
+		if lower ~= name then
+			resolved = resolve_pkg(lower)
+			if resolved then return resolved end
+		end
+		return nil
 	end
-	local fname = include_path:match("([^/]+)$")
-	if fname and map[fname] then
-		return map[fname]
-	end
+
+	local first = inc:match('^([^/]+)')
+	local pkg = try_candidate(first)
+	if pkg then return pkg end
+
+	local fname = inc:match('([^/]+)%.h$')
+	pkg = try_candidate(fname)
+	if pkg then return pkg end
+
 	return nil
 end
 
 local _pkg_resolve_cache = {}
 local function resolve_pkg(base)
-	if _pkg_resolve_cache[base] ~= nil then
-		return _pkg_resolve_cache[base] or nil
+	if _pkg_resolve_cache[base] ~= nil then return _pkg_resolve_cache[base] or nil end
+	local all = get_pkg_list()
+	if all[base] then
+		_pkg_resolve_cache[base] = base; return base
 	end
-	if os.execute("pkg-config --exists " .. base .. " 2>/dev/null") == 0 then
-		_pkg_resolve_cache[base] = base
-		return base
-	end
-	local h = io.popen(
-		"pkg-config --list-all 2>/dev/null | grep -E '^" .. base .. "[-[:space:]]' | head -1 | awk '{print $1}'"
-	)
-	if h then
-		local found = vim.trim(h:read("*l") or "")
-		h:close()
-		if found ~= "" then
-			_pkg_resolve_cache[base] = found
-			return found
+	for _, sep in ipairs({ '-', '+' }) do
+		local prefix = base .. sep
+		for name in pairs(all) do
+			if name:sub(1, #prefix) == prefix then
+				_pkg_resolve_cache[base] = name; return name
+			end
 		end
 	end
-	_pkg_resolve_cache[base] = false
-	return nil
+	_pkg_resolve_cache[base] = false; return nil
 end
 
 local _pkg_flag_cache = {}

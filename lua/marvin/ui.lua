@@ -2,47 +2,6 @@
 local M = {}
 M.backend = nil
 
-local C = {
-  bg       = '#1e1e2e',
-  bg3      = '#11111b',
-  surface0 = '#313244',
-  surface1 = '#45475a',
-  surface2 = '#585b70',
-  text     = '#cdd6f4',
-  sub1     = '#bac2de',
-  sub0     = '#a6adc8',
-  ov0      = '#6c7086',
-  ov1      = '#7f849c',
-  blue     = '#89b4fa',
-  mauve    = '#cba6f7',
-  green    = '#a6e3a1',
-  yellow   = '#f9e2af',
-  peach    = '#fab387',
-  red      = '#f38ba8',
-  sky      = '#89dceb',
-}
-
-local function setup_highlights()
-  local function hl(n, o) vim.api.nvim_set_hl(0, n, o) end
-  hl('MarvinWin', { bg = C.bg, fg = C.text })
-  hl('MarvinBorder', { fg = C.surface1, bg = C.bg })
-  hl('MarvinTitle', { fg = C.mauve, bold = true })
-  hl('MarvinSelected', { bg = C.mauve, fg = C.bg, bold = true })
-  hl('MarvinItem', { fg = C.sub1 })
-  hl('MarvinItemIcon', { fg = C.text })
-  hl('MarvinDesc', { fg = C.ov0 })
-  hl('MarvinSepLine', { fg = C.surface1 })
-  hl('MarvinSepLabel', { fg = C.ov1, italic = true })
-  hl('MarvinSearch', { fg = C.sky, bold = true })
-  hl('MarvinSearchBox', { fg = C.ov0 })
-  hl('MarvinFooter', { fg = C.ov0 })
-  hl('MarvinFooterKey', { fg = C.peach, bold = true })
-  hl('MarvinBadge', { fg = C.yellow })
-  hl('MarvinHiddenCursor', { fg = C.bg, bg = C.bg, blend = 100 })
-  hl('MarvinInputText', { fg = C.sky })
-  hl('MarvinInputHint', { fg = C.ov0 })
-end
-
 function M.detect_backend()
   if pcall(require, 'snacks') then
     return 'snacks'
@@ -58,7 +17,7 @@ function M.init(cfg)
   cfg = cfg or {}
   local backend = cfg.ui_backend or 'auto'
   M.backend = backend == 'auto' and M.detect_backend() or backend
-  setup_highlights()
+  require('marvin.color').setup(cfg)
 end
 
 -- ── Fuzzy match ───────────────────────────────────────────────────────────────

@@ -4,6 +4,10 @@ local M = {}
 M.defaults = {
 	ui_backend = "auto", -- auto | snacks | dressing | builtin
 
+	ui = {
+		theme = "auto", -- "auto" | { MarvinWin = { ... }, ... }
+	},
+
 	terminal = {
 		position = "float", -- float | split | vsplit | background
 		size = 0.4,

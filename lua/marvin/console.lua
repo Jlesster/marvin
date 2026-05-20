@@ -4,43 +4,8 @@
 
 local M = {}
 
-local C = {
-  bg = '#1e1e2e',
-  bg2 = '#181825',
-  bg3 = '#11111b',
-  surface0 = '#313244',
-  surface1 = '#45475a',
-  text = '#cdd6f4',
-  sub1 = '#bac2de',
-  ov0 = '#6c7086',
-  blue = '#89b4fa',
-  mauve = '#cba6f7',
-  green = '#a6e3a1',
-  yellow = '#f9e2af',
-  peach = '#fab387',
-  red = '#f38ba8',
-  sky = '#89dceb',
-}
-
 local function setup_hl()
-  local function hl(n, o) vim.api.nvim_set_hl(0, n, o) end
-  hl('JasonConWin', { bg = C.bg, fg = C.text })
-  hl('JasonConBorder', { fg = C.surface1, bg = C.bg })
-  hl('JasonConTitle', { fg = C.mauve, bold = true })
-  hl('JasonConOutWin', { bg = C.bg3, fg = C.sub1 })
-  hl('JasonConOutBorder', { fg = C.surface0, bg = C.bg3 })
-  hl('JasonConOutTitle', { fg = C.blue, bold = true })
-  hl('JasonConSep', { fg = C.surface1 })
-  hl('JasonConSepLbl', { fg = C.ov0, italic = true })
-  hl('JasonConSel', { bg = C.surface0, fg = C.text })
-  hl('JasonConOk', { fg = C.green, bold = true })
-  hl('JasonConFail', { fg = C.red, bold = true })
-  hl('JasonConRunning', { fg = C.yellow, bold = true })
-  hl('JasonConDim', { fg = C.ov0 })
-  hl('JasonConCmd', { fg = C.sky })
-  hl('JasonConTime', { fg = C.peach })
-  hl('JasonConFooter', { fg = C.ov0 })
-  hl('JasonConFooterKey', { fg = C.peach, bold = true })
+  require('marvin.color').setup()
 end
 
 local state = {

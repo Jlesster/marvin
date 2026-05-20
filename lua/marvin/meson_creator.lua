@@ -20,6 +20,9 @@
 
 local M = {}
 
+-- Exposed functions for use by other modules
+M.exposed = {}
+
 local function ui() return require('marvin.ui') end
 local function plain(it) return it.label end
 
@@ -146,13 +149,110 @@ local function include_to_pkg(inc)
         return nil
     end
 
+    -- Try first path component
     local first = inc:match('^([^/]+)')
     local pkg = try_candidate(first)
     if pkg then return pkg end
 
+    -- Try filename without extension (handle paths with /)
     local fname = inc:match('([^/]+)%.h$')
-    pkg = try_candidate(fname)
-    if pkg then return pkg end
+    if not fname then
+        -- Try to extract filename from path (e.g., "path/to/file.h" -> "file")
+        local basename = inc:match('[^/]+$')
+        if basename then
+            fname = basename:match('(.+)%.h$')
+        end
+    end
+    if fname then
+        pkg = try_candidate(fname)
+        if pkg then return pkg end
+    end
+
+    -- Try common variations: remove common prefixes/suffixes
+    if first then
+        -- Remove common prefixes like 'lib'
+        local no_prefix = first:match('^lib(.+)' )
+        if no_prefix then
+            pkg = try_candidate(no_prefix)
+            if pkg then return pkg end
+        end
+        -- Remove common suffixes
+        local no_suffix = first:match('^(.+)%-[^-]+$')
+        if no_suffix and no_suffix ~= first then
+            pkg = try_candidate(no_suffix)
+            if pkg then return pkg end
+        end
+    end
+
+    -- Try additional common patterns for library naming
+    if first then
+        -- Try with common version suffixes removed (e.g., glib-2.0 -> glib)
+        local base_no_version = first:match('^(.+)%-%d+%.%d+')
+        if base_no_version then
+            pkg = try_candidate(base_no_version)
+            if pkg then return pkg end
+        end
+
+        -- Try removing trailing numbers or version-like patterns
+        local base_no_trailing_num = first:match('^(.+)%d+$')
+        if base_no_trailing_num then
+            pkg = try_candidate(base_no_trailing_num)
+            if pkg then return pkg end
+        end
+
+        -- Try converting underscores to hyphens (common in some libraries)
+        local with_hyphens = first:gsub('_', '-')
+        if with_hyphens ~= first then
+            pkg = try_candidate(with_hyphens)
+            if pkg then return pkg end
+        end
+
+        -- Try converting hyphens to underscores
+        local with_underscores = first:gsub('-', '_')
+        if with_underscores ~= first then
+            pkg = try_candidate(with_underscores)
+            if pkg then return pkg end
+        end
+
+        -- Try removing common suffixes like -dev, -libs, etc.
+        local no_dev_suffix = first:match('^(.+)%-dev$')
+        if no_dev_suffix then
+            pkg = try_candidate(no_dev_suffix)
+            if pkg then return pkg end
+        end
+        local no_libs_suffix = first:match('^(.+)%-libs$')
+        if no_libs_suffix then
+            pkg = try_candidate(no_libs_suffix)
+            if pkg then return pkg end
+        end
+
+        -- Try removing version numbers at the end (e.g., gtk3 -> gtk)
+        local no_version_num = first:match('^(.+)%d+$')
+        if no_version_num then
+            pkg = try_candidate(no_version_num)
+            if pkg then return pkg end
+        end
+
+        -- Try adding common prefixes for libraries that don't include them in the path
+        -- but do in their package names
+        if not first:match('^lib') then
+            local with_lib = 'lib' .. first
+            pkg = try_candidate(with_lib)
+            if pkg then return pkg end
+        end
+
+        -- Try handling cases where the include path has subdirectories
+        -- but the package name doesn't (e.g., gtk/gtk.h -> gtk)
+        if inc:match('/') then
+            -- Extract the last path component before the filename
+            local path_part = inc:match('^(.*)/[^/]+$')
+            if path_part then
+                -- Try the path part as a package name
+                pkg = try_candidate(path_part)
+                if pkg then return pkg end
+            end
+        end
+    end
 
     return nil
 end
@@ -165,13 +265,16 @@ local function get_pkg_list()
     if _pkg_list_cache then return _pkg_list_cache end
     local set = {}
     local h = io.popen('pkg-config --list-all 2>/dev/null')
-    if h then
-        for line in h:lines() do
-            local name = line:match('^(%S+)')
-            if name then set[name] = true end
-        end
-        h:close()
+    if not h then
+        -- If pkg-config is not available, return empty set
+        _pkg_list_cache = set
+        return set
     end
+    for line in h:lines() do
+        local name = line:match('^(%S+)')
+        if name then set[name] = true end
+    end
+    h:close()
     _pkg_list_cache = set
     return set
 end
@@ -180,6 +283,10 @@ local _pkg_resolve_cache = {}
 local function resolve_pkg(base)
     if _pkg_resolve_cache[base] ~= nil then return _pkg_resolve_cache[base] or nil end
     local all = get_pkg_list()
+    -- Handle empty package list
+    if not all or next(all) == nil then
+        _pkg_resolve_cache[base] = false; return nil
+    end
     -- exact match
     if all[base] then
         _pkg_resolve_cache[base] = base; return base
@@ -190,6 +297,51 @@ local function resolve_pkg(base)
         for name in pairs(all) do
             if name:sub(1, #prefix) == prefix then
                 _pkg_resolve_cache[base] = name; return name
+            end
+        end
+    end
+    -- Try with common prefixes removed
+    if base:find('^lib') then
+        local no_lib = base:sub(4)
+        if all[no_lib] then
+            _pkg_resolve_cache[base] = no_lib; return no_lib
+        end
+        for _, sep in ipairs({ '-', '+' }) do
+            local prefix = no_lib .. sep
+            for name in pairs(all) do
+                if name:sub(1, #prefix) == prefix then
+                    _pkg_resolve_cache[base] = name; return name
+                end
+            end
+        end
+    end
+    -- Try adding common prefixes
+    local with_lib = 'lib' .. base
+    if all[with_lib] then
+        _pkg_resolve_cache[base] = with_lib; return with_lib
+    end
+    for _, sep in ipairs({ '-', '+' }) do
+        local prefix = with_lib .. sep
+        for name in pairs(all) do
+            if name:sub(1, #prefix) == prefix then
+                _pkg_resolve_cache[base] = name; return name
+            end
+        end
+    end
+    -- Try with common suffixes removed
+    if base:match('%-[^-]+$') then
+        local no_suffix = base:match('^(.+)%-[^-]+$')
+        if no_suffix and no_suffix ~= base then
+            if all[no_suffix] then
+                _pkg_resolve_cache[base] = no_suffix; return no_suffix
+            end
+            for _, sep in ipairs({ '-', '+' }) do
+                local prefix = no_suffix .. sep
+                for name in pairs(all) do
+                    if name:sub(1, #prefix) == prefix then
+                        _pkg_resolve_cache[base] = name; return name
+                    end
+                end
             end
         end
     end
@@ -218,11 +370,8 @@ local function detect_pkg_deps(root)
         if inc then
             local pkg = include_to_pkg(inc)
             if pkg and not found[pkg] then
-                local resolved = resolve_pkg(pkg)
-                if resolved then
-                    found[pkg]            = true
-                    ordered[#ordered + 1] = resolved
-                end
+                found[pkg]            = true
+                ordered[#ordered + 1] = pkg
             end
         end
     end
@@ -982,5 +1131,24 @@ function M.create(root, on_back)
         end)
     end)
 end
+
+-- Expose functions for use by other modules (e.g., Jason dashboard sync)
+M.exposed.infer_lang = infer_lang
+M.exposed.collect_sources = collect_sources
+M.exposed.collect_include_dirs = collect_include_dirs
+M.exposed.detect_pkg_deps = detect_pkg_deps
+M.exposed.detect_find_library_deps = detect_find_library_deps
+M.exposed.auto_detect = auto_detect
+M.exposed.meson_template = meson_template
+M.exposed.detect_main_files = detect_main_files -- the grep-based one at line 399
+M.exposed.scan_needs_wlr_unstable = scan_needs_wlr_unstable
+M.exposed.detect_needs_posix = detect_needs_posix
+M.exposed.detect_needs_wayland_server = detect_needs_wayland_server
+M.exposed.detect_needs_xkbcommon = detect_needs_xkbcommon
+M.exposed.include_to_pkg = include_to_pkg
+M.exposed.resolve_pkg = resolve_pkg
+M.exposed.get_pkg_list = get_pkg_list
+M.exposed.grep_any = grep_any
+M.exposed.var = var
 
 return M
