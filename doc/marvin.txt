@@ -49,7 +49,7 @@ Optional (for enhanced UI):
 
 Using lazy.nvim: >lua
     {
-      'yourusername/marvin.nvim',
+      'Jlesster/marvin',
       config = function()
         require('marvin').setup({
           -- your config here
@@ -60,7 +60,7 @@ Using lazy.nvim: >lua
 
 Using packer.nvim: >lua
     use {
-      'yourusername/marvin.nvim',
+      'Jlesster/marvin',
       config = function()
         require('marvin').setup()
       end

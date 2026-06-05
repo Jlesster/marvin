@@ -292,6 +292,7 @@ end
 function M.close()
   stop_timer()
   state.open = false
+  pcall(vim.api.nvim_del_augroup_by_name, 'marvin_console_resize')
   pcall(vim.api.nvim_win_close, state.list_win, true)
   pcall(vim.api.nvim_win_close, state.out_win, true)
   state.list_win = nil; state.out_win = nil
@@ -308,13 +309,22 @@ function M.open()
   local h       = history()
   state.sel     = math.max(1, math.min(state.sel, math.max(1, #h)))
 
-  local screen  = vim.api.nvim_list_uis()[1]
-  local H       = screen.height
-  local W       = screen.width
-  local TOTAL_H = math.floor(H * 0.45)
-  local OUT_W   = W - LIST_W - 3
-  local ROW     = H - TOTAL_H - 2
+  local TOTAL_H = 0
+  local OUT_W   = 0
+  local ROW     = 0
   local COL     = 1
+
+  local function recompute_layout()
+    local screen = vim.api.nvim_list_uis()[1]
+    local H      = screen.height
+    local W      = screen.width
+    TOTAL_H = math.floor(H * 0.45)
+    OUT_W   = W - LIST_W - 3
+    ROW     = H - TOTAL_H - 2
+    COL     = 1
+  end
+
+  recompute_layout()
 
   local function mkbuf()
     local b = vim.api.nvim_create_buf(false, true)
@@ -432,6 +442,23 @@ function M.open()
           end
         end, 10)
       end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd('VimResized', {
+    group    = vim.api.nvim_create_augroup('marvin_console_resize', { clear = true }),
+    callback = function()
+      if not is_valid_win(state.list_win) or not is_valid_win(state.out_win) then return end
+      recompute_layout()
+      for _, w in ipairs({ state.list_win, state.out_win }) do
+        pcall(vim.api.nvim_win_set_config, w, {
+          width  = w == state.list_win and LIST_W or OUT_W,
+          height = TOTAL_H,
+          row    = ROW,
+          col    = w == state.list_win and COL or COL + LIST_W + 1,
+        })
+      end
+      redraw()
     end,
   })
 

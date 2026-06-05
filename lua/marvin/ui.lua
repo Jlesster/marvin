@@ -66,7 +66,10 @@ function M.select(items, opts, callback)
   local vis    = vim.deepcopy(all)
   local search = ''
   local screen = vim.api.nvim_list_uis()[1]
-  local LIST_W = math.min(80, math.max(60, math.floor(screen.width * 0.55)))
+  local LIST_W = 60
+  local WIN_H  = 10
+  local ROW    = 0
+  local COL    = 0
 
   local function sel_total()
     local n = 0
@@ -75,16 +78,18 @@ function M.select(items, opts, callback)
   end
 
   local function content_lines()
-    return #vis + (enable_search and 3 or 1) + 4
+    return #vis + (enable_search and 3 or 1) + 3
   end
 
-  local function win_h()
-    return math.max(10, math.min(content_lines(), math.floor(screen.height * 0.82)))
+  local function recompute_layout()
+    screen = vim.api.nvim_list_uis()[1]
+    LIST_W = math.min(80, math.max(60, math.floor(screen.width * 0.55)))
+    WIN_H  = math.max(10, math.min(content_lines(), math.floor(screen.height * 0.82)))
+    ROW    = math.floor((screen.height - WIN_H) / 2)
+    COL    = math.floor((screen.width - LIST_W) / 2)
   end
 
-  local WIN_H = win_h()
-  local ROW   = math.floor((screen.height - WIN_H) / 2)
-  local COL   = math.floor((screen.width - LIST_W) / 2)
+  recompute_layout()
 
   local lbuf  = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('buftype', 'nofile', { buf = lbuf })
@@ -115,12 +120,27 @@ function M.select(items, opts, callback)
     signcolumn = 'no', scrolloff = 0,
   }) do vim.api.nvim_set_option_value(k, v, { win = lwin }) end
 
+  vim.api.nvim_create_autocmd('VimResized', {
+    group    = vim.api.nvim_create_augroup('marvin_select_resize', { clear = true }),
+    callback = function()
+      if not vim.api.nvim_win_is_valid(lwin) then return end
+      recompute_layout()
+      pcall(vim.api.nvim_win_set_config, lwin, {
+        width  = LIST_W,
+        height = WIN_H,
+        row    = ROW,
+        col    = COL,
+      })
+      redraw()
+    end,
+  })
+
   local ns      = vim.api.nvim_create_namespace('marvin_select')
   local sel_pos = 1
   local vt      = 1
 
   local function visible_rows()
-    return math.max(1, WIN_H - (enable_search and 3 or 1) - 4)
+    return math.max(1, WIN_H - (enable_search and 3 or 1) - 3)
   end
 
   local function desc_col()
@@ -209,6 +229,13 @@ function M.select(items, opts, callback)
               row = row .. string.rep(' ', LIST_W - 2 - rw)
             end
 
+            if rank == vt and show_up then
+              row = vim.fn.strcharpart(row, 0, LIST_W - 4) .. ' ▲'
+            end
+            if rank == view_end and show_down then
+              row = vim.fn.strcharpart(row, 0, LIST_W - 4) .. ' ▼'
+            end
+
             local ln = #lines
             lines[#lines + 1] = row
 
@@ -223,8 +250,8 @@ function M.select(items, opts, callback)
               end
             end
 
-            if rank == vt and show_up then ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2) end
-            if rank == view_end and show_down then ahl(ln, 'MarvinFooter', LIST_W - 3, LIST_W - 2) end
+            if rank == vt and show_up then ahl(ln, 'MarvinFooter', LIST_W - 4, LIST_W - 2) end
+            if rank == view_end and show_down then ahl(ln, 'MarvinFooter', LIST_W - 4, LIST_W - 2) end
           end
         end
       end
@@ -259,9 +286,9 @@ function M.select(items, opts, callback)
     elseif d == 'up' then
       sel_pos = sel_pos - 1; if sel_pos < 1 then sel_pos = total end
     elseif d == 'pgd' then
-      sel_pos = math.min(sel_pos + 8, total)
+      sel_pos = math.min(sel_pos + visible_rows(), total)
     elseif d == 'pgu' then
-      sel_pos = math.max(sel_pos - 8, 1)
+      sel_pos = math.max(sel_pos - visible_rows(), 1)
     elseif d == 'top' then
       sel_pos = 1
     elseif d == 'bot' then
@@ -293,7 +320,13 @@ function M.select(items, opts, callback)
       table.sort(vis, function(a, b) return (a.score or 0) > (b.score or 0) end)
     end
     sel_pos = 1; vt = 1
-    pcall(vim.api.nvim_win_set_height, lwin, win_h())
+    recompute_layout()
+    pcall(vim.api.nvim_win_set_config, lwin, {
+      width  = LIST_W,
+      height = WIN_H,
+      row    = ROW,
+      col    = COL,
+    })
     redraw()
   end
 
